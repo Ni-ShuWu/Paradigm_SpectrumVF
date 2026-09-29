@@ -1,5 +1,6 @@
 __pycache__/
-build/
+build*/
 dist/
 *.spec
 判定实现分析.md
+*.pyc
