@@ -20,17 +20,24 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
+#include <QSizePolicy>
 #include <QShortcut>
 #include <QVBoxLayout>
 #include <QTemporaryDir>
 #include <QFileInfo>
+#include <QFrame>
 #include <QRegularExpression>
+#include <QScrollArea>
+#include <QSpinBox>
 #include <QStandardPaths>
 #include <QDirIterator>
 
 namespace {
-constexpr double PlaneWidth = 12.0;
-constexpr double PlaneHeight = 9.0;
+constexpr int LaneCount = 5;
+constexpr int LaneWidth = 92;
+constexpr int TickHeight = 24;
+constexpr int HeaderHeight = 32;
+constexpr int MinimumTicks = 64;
 const QColor Bg("#101715");
 const QColor Panel("#18211d");
 const QColor Raised("#202c26");
@@ -74,16 +81,19 @@ bool isAllowedExtension(const QString &path, const QStringList &extensions)
 
 JudgePlane::JudgePlane(QWidget *parent) : QWidget(parent)
 {
-    setMinimumSize(520, 400);
+    setMinimumSize(LaneCount * LaneWidth, HeaderHeight + MinimumTicks * TickHeight);
     setMouseTracking(true);
     setCursor(Qt::CrossCursor);
     setAutoFillBackground(false);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    resize(LaneCount * LaneWidth, contentHeight());
 }
 
 void JudgePlane::setNotes(const QVector<Note> *notes, int selected)
 {
     m_notes = notes;
     m_selected = selected;
+    resize(width(), contentHeight());
     update();
 }
 
@@ -94,38 +104,53 @@ void JudgePlane::setTool(const QString &tool, int edge)
     setCursor(tool == QStringLiteral("select") ? Qt::ArrowCursor : Qt::CrossCursor);
 }
 
-QRectF JudgePlane::gridRect() const
+void JudgePlane::setSubdivision(int subdivision)
 {
-    const double unit = qMin((width() - 76.0) / PlaneWidth, (height() - 66.0) / PlaneHeight);
-    const double w = unit * PlaneWidth;
-    const double h = unit * PlaneHeight;
-    return QRectF((width() - w) / 2.0, (height() - h) / 2.0, w, h);
+    m_subdivision = subdivision;
+    update();
 }
 
-QPointF JudgePlane::toGrid(const QPointF &point) const
+QRectF JudgePlane::gridRect() const
 {
-    const QRectF rect = gridRect();
-    return {(point.x() - rect.left()) / (rect.width() / PlaneWidth),
-            PlaneHeight - (point.y() - rect.top()) / (rect.height() / PlaneHeight)};
+    return QRectF(0.0, HeaderHeight, width(), height() - HeaderHeight);
+}
+
+double JudgePlane::laneWidth() const
+{
+    return width() / static_cast<double>(LaneCount);
+}
+
+int JudgePlane::tickAt(double y) const
+{
+    return qMax(0, qFloor((y - HeaderHeight) / TickHeight));
+}
+
+int JudgePlane::laneAt(double x) const
+{
+    return qBound(0, qFloor(x / laneWidth()), LaneCount - 1);
+}
+
+int JudgePlane::contentHeight() const
+{
+    int lastTick = MinimumTicks - 1;
+    if (m_notes) {
+        for (const Note &note : *m_notes)
+            lastTick = qMax(lastTick, note.tick);
+    }
+    return HeaderHeight + (lastTick + 2) * TickHeight;
 }
 
 int JudgePlane::nearestNote(const QPointF &point) const
 {
-    if (!m_notes) return -1;
-    const QRectF rect = gridRect();
-    const double unitX = rect.width() / PlaneWidth;
-    const double unitY = rect.height() / PlaneHeight;
-    const double radius = qMax(11.0, qMin(unitX, unitY) * 0.30);
-    double best = radius;
-    int index = -1;
-    for (int i = 0; i < m_notes->size(); ++i) {
-        const QPointF position = m_notes->at(i).coordinates();
-        const QPointF pixel(rect.left() + position.x() * unitX,
-                            rect.bottom() - position.y() * unitY);
-        const double distance = QLineF(pixel, point).length();
-        if (distance <= best) { best = distance; index = i; }
+    if (!m_notes || !gridRect().contains(point)) return -1;
+    const int targetTick = tickAt(point.y());
+    const int targetLane = laneAt(point.x());
+    for (int i = m_notes->size() - 1; i >= 0; --i) {
+        const Note &note = m_notes->at(i);
+        const int lane = note.type == QStringLiteral("EdgeNote") ? note.edge : 4;
+        if (note.tick == targetTick && lane == targetLane) return i;
     }
-    return index;
+    return -1;
 }
 
 void JudgePlane::paintEvent(QPaintEvent *)
@@ -134,74 +159,60 @@ void JudgePlane::paintEvent(QPaintEvent *)
     painter.setRenderHint(QPainter::Antialiasing);
     painter.fillRect(rect(), Bg);
     const QRectF plane = gridRect();
-    const double unitX = plane.width() / PlaneWidth;
-    const double unitY = plane.height() / PlaneHeight;
     QFont utility(QStringLiteral("Consolas"), 9);
     painter.setFont(utility);
-    for (int col = 0; col <= 12; ++col) {
-        const bool major = col % 3 == 0;
-        painter.setPen(QPen(major ? Grid : QColor("#24332a"), major ? 1.2 : 0.7));
-        const double x = plane.left() + col * unitX;
-        painter.drawLine(QPointF(x, plane.top()), QPointF(x, plane.bottom()));
-        if (col < 12 && major) {
-            painter.setPen(Muted);
-            painter.drawText(QRectF(x, plane.bottom() + 7, unitX, 18), Qt::AlignHCenter, QString::number(col));
-        }
+    const QStringList lanes{QStringLiteral("0"), QStringLiteral("1"), QStringLiteral("2"),
+                            QStringLiteral("3"), QStringLiteral("判定区")};
+    const double laneSize = laneWidth();
+    painter.fillRect(QRectF(0, 0, width(), HeaderHeight), Panel);
+    for (int lane = 0; lane < LaneCount; ++lane) {
+        const double x = lane * laneSize;
+        painter.setPen(QPen(Grid, 1));
+        painter.drawLine(QPointF(x, 0), QPointF(x, height()));
+        painter.setPen(lane == 4 ? Cyan : Mint);
+        painter.drawText(QRectF(x, 0, laneSize, HeaderHeight), Qt::AlignCenter, lanes.at(lane));
     }
-    for (int row = 0; row <= 9; ++row) {
-        const bool major = row % 3 == 0;
-        painter.setPen(QPen(major ? Grid : QColor("#24332a"), major ? 1.2 : 0.7));
-        const double y = plane.top() + row * unitY;
-        painter.drawLine(QPointF(plane.left(), y), QPointF(plane.right(), y));
-        if (row < 9 && major) {
+    painter.setPen(QPen(Grid, 1));
+    painter.drawLine(QPointF(width() - 1, 0), QPointF(width() - 1, height()));
+    const int lastTick = tickAt(height());
+    for (int tick = 0; tick <= lastTick; ++tick) {
+        const double y = HeaderHeight + tick * TickHeight;
+        const bool beat = tick % m_subdivision == 0;
+        const bool measure = tick % (m_subdivision * 4) == 0;
+        painter.setPen(QPen(measure ? QColor("#788f7c") : (beat ? Grid : QColor("#24332a")), measure ? 1.4 : (beat ? 1.0 : 0.6)));
+        painter.drawLine(QPointF(0, y), QPointF(width(), y));
+        if (tick % m_subdivision == 0) {
             painter.setPen(Muted);
-            painter.drawText(QRectF(plane.left() - 28, y - 9, 20, 18), Qt::AlignRight | Qt::AlignVCenter,
-                             QString::number(9 - row));
+            painter.drawText(QRectF(4, y + 2, laneSize - 8, 16), Qt::AlignLeft, QStringLiteral("%1 拍").arg(tick / m_subdivision + 1));
         }
     }
     painter.setPen(QPen(QColor("#788f7c"), 1.5));
-    painter.setBrush(Qt::NoBrush);
     painter.drawRect(plane);
     if (!m_notes) return;
     for (int i = 0; i < m_notes->size(); ++i) {
         const Note &note = m_notes->at(i);
-        const QPointF position = note.coordinates();
-        const QPointF center(plane.left() + position.x() * unitX, plane.bottom() - position.y() * unitY);
-        const double radius = qBound(6.0, qMin(unitX, unitY) * 0.19, 14.0);
-        const QColor color = note.type == QStringLiteral("EdgeNote") ? Mint : Cyan;
-        painter.setPen(QPen(note.isFake ? Amber : (i == m_selected ? Text : color), i == m_selected ? 3 : 1,
+        if (note.tick < 0) continue;
+        const int lane = note.type == QStringLiteral("EdgeNote") ? note.edge : 4;
+        const QRectF cell(lane * laneSize + 4, HeaderHeight + note.tick * TickHeight + 3, laneSize - 8, TickHeight - 6);
+        const QColor color = lane == 4 ? Cyan : Mint;
+        painter.setPen(QPen(note.isFake ? Amber : (i == m_selected ? Text : color), i == m_selected ? 2 : 1,
                             note.isFake ? Qt::DashLine : Qt::SolidLine));
-        painter.setBrush(note.isFake ? Qt::NoBrush : color);
-        painter.drawEllipse(center, radius, radius);
-        if (note.type == QStringLiteral("EdgeNote")) {
-            QPolygonF diamond{QPointF(center.x(), center.y() - radius * .8),
-                              QPointF(center.x() + radius * .8, center.y()),
-                              QPointF(center.x(), center.y() + radius * .8),
-                              QPointF(center.x() - radius * .8, center.y())};
-            painter.setPen(QPen(note.isFake ? Amber : color, 2));
-            painter.setBrush(note.isFake ? Qt::NoBrush : color);
-            painter.drawPolygon(diamond);
-        }
-        if (i == m_selected) {
-            painter.setPen(Text);
-            painter.drawText(center + QPointF(radius + 5, -radius - 5), QStringLiteral("%1 · %2").arg(note.kind).arg(note.tick));
-        }
+        painter.setBrush(note.isFake ? Qt::NoBrush : QColor(color.red(), color.green(), color.blue(), 130));
+        painter.drawRoundedRect(cell, 5, 5);
+        painter.setPen(note.isFake ? Amber : Text);
+        painter.drawText(cell, Qt::AlignCenter, QStringLiteral("%1 · %2").arg(note.kind).arg(note.tick));
     }
 }
 
 void JudgePlane::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() != Qt::LeftButton) return;
+    if (event->button() != Qt::LeftButton || !gridRect().contains(event->position())) return;
     const QPointF point = event->position();
     if (m_tool == QStringLiteral("select")) {
         m_dragIndex = nearestNote(point);
         emit noteSelected(m_dragIndex);
     } else {
-        const QRectF plane = gridRect();
-        if (plane.contains(point)) {
-            const QPointF grid = toGrid(point);
-            emit notePlaced(qBound(0.0, grid.x(), PlaneWidth), qBound(0.0, grid.y(), PlaneHeight));
-        }
+        emit notePlaced(tickAt(point.y()), laneAt(point.x()));
     }
 }
 
@@ -209,9 +220,8 @@ void JudgePlane::mouseMoveEvent(QMouseEvent *event)
 {
     if (m_dragIndex < 0 || !(event->buttons() & Qt::LeftButton)) return;
     const QRectF plane = gridRect();
-    if (!plane.adjusted(-20, -20, 20, 20).contains(event->position())) return;
-    const QPointF grid = toGrid(event->position());
-    emit noteMoved(m_dragIndex, qBound(0.0, grid.x(), PlaneWidth), qBound(0.0, grid.y(), PlaneHeight));
+    if (event->position().y() < plane.top() || event->position().y() >= plane.bottom()) return;
+    emit noteMoved(m_dragIndex, tickAt(event->position().y()), laneAt(event->position().x()));
 }
 
 void JudgePlane::mouseReleaseEvent(QMouseEvent *event)
@@ -262,15 +272,30 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
     auto *workLayout = new QVBoxLayout(work);
     workLayout->setContentsMargins(14, 12, 14, 12);
     auto *caption = new QHBoxLayout;
-    auto *cap = new QLabel(QStringLiteral("JUDGE PLANE"), work);
+    auto *cap = new QLabel(QStringLiteral("五轨时间轴"), work);
     cap->setStyleSheet("color:#91a497;font-family:Consolas;font-weight:700");
-    caption->addWidget(cap); caption->addStretch();
-    auto *measure = new QLabel(QStringLiteral("12 × 9  /  半开矩形判定"), work);
-    measure->setStyleSheet("color:#91a497");
-    caption->addWidget(measure); workLayout->addLayout(caption);
+    caption->addWidget(cap);
+    caption->addStretch();
+    caption->addWidget(new QLabel(QStringLiteral("BPM"), work));
+    m_bpm = new QSpinBox(work);
+    m_bpm->setRange(1, 1000);
+    m_bpm->setValue(m_chart.bpm);
+    m_bpm->setFixedWidth(84);
+    caption->addWidget(m_bpm);
+    caption->addWidget(new QLabel(QStringLiteral("每拍分音"), work));
+    m_subdivision = new QSpinBox(work);
+    m_subdivision->setRange(1, 64);
+    m_subdivision->setValue(m_chart.subdivision);
+    m_subdivision->setFixedWidth(72);
+    caption->addWidget(m_subdivision);
+    workLayout->addLayout(caption);
     m_plane = new JudgePlane(work);
-    workLayout->addWidget(m_plane, 1);
-    auto *legend = new QLabel(QStringLiteral("● 判面音符　　◆ 边线音符　　◇ 假音符　·　点击放置 / 拖动移动"), work);
+    m_timelineScroll = new QScrollArea(work);
+    m_timelineScroll->setWidgetResizable(true);
+    m_timelineScroll->setFrameShape(QFrame::NoFrame);
+    m_timelineScroll->setWidget(m_plane);
+    workLayout->addWidget(m_timelineScroll, 1);
+    auto *legend = new QLabel(QStringLiteral("0–3：四边音符　·　判定区：区内音符　·　每格为一个分音 tick　·　点击放置 / 拖动移动"), work);
     legend->setStyleSheet("color:#91a497;padding:4px");
     workLayout->addWidget(legend);
     body->addWidget(work, 1);
@@ -284,9 +309,9 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
     toolsLabel->setStyleSheet("color:#91a497;font-family:Consolas;font-weight:700");
     sideLayout->addWidget(toolsLabel);
     auto *selectButton = button(QStringLiteral("↖ 选取 / 移动"), side);
-    auto *spaceButton = button(QStringLiteral("● 判面音符"), side);
-    auto *edgeButton = button(QStringLiteral("◆ 边线音符"), side);
-    sideLayout->addWidget(selectButton); sideLayout->addWidget(spaceButton); sideLayout->addWidget(edgeButton);
+    auto *placeButton = button(QStringLiteral("＋ 放置音符"), side);
+    sideLayout->addWidget(selectButton);
+    sideLayout->addWidget(placeButton);
     sideLayout->addSpacing(8);
     auto *propsLabel = new QLabel(QStringLiteral("NOTE  /  音符属性"), side);
     propsLabel->setStyleSheet("color:#91a497;font-family:Consolas;font-weight:700");
@@ -295,11 +320,11 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
     m_kind = new QComboBox(side);
     m_kind->addItems({QStringLiteral("tap"), QStringLiteral("link"), QStringLiteral("slider")});
     sideLayout->addWidget(m_kind);
-    sideLayout->addWidget(new QLabel(QStringLiteral("边线位置"), side));
+    sideLayout->addWidget(new QLabel(QStringLiteral("边线位置（对应轨道 0–3）"), side));
     m_edgeBox = new QComboBox(side);
-    m_edgeBox->addItems({QStringLiteral("左边线"), QStringLiteral("右边线"), QStringLiteral("上边线"), QStringLiteral("下边线")});
+    m_edgeBox->addItems({QStringLiteral("0 · 左边线"), QStringLiteral("1 · 右边线"), QStringLiteral("2 · 上边线"), QStringLiteral("3 · 下边线")});
     sideLayout->addWidget(m_edgeBox);
-    sideLayout->addWidget(new QLabel(QStringLiteral("tick / 谱面原始刻度"), side));
+    sideLayout->addWidget(new QLabel(QStringLiteral("tick（分音格编号）"), side));
     m_tick = new QLineEdit(QStringLiteral("0"), side);
     sideLayout->addWidget(m_tick);
     m_fake = new QCheckBox(QStringLiteral("假音符（不参与判定）"), side);
@@ -327,18 +352,26 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
     connect(openButton, &QPushButton::clicked, this, &EditorWindow::openChart);
     connect(saveButton, &QPushButton::clicked, this, [this] { saveChartFile(); });
     connect(m_title, &QLineEdit::textEdited, this, [this] { m_chart.title = m_title->text(); markDirty(); });
+    connect(m_bpm, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { setTiming(m_bpm->value(), m_subdivision->value()); });
+    connect(m_subdivision, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { setTiming(m_bpm->value(), m_subdivision->value()); });
     connect(selectButton, &QPushButton::clicked, this, [this] { m_tool = QStringLiteral("select"); m_plane->setTool(m_tool, m_edge); });
-    connect(spaceButton, &QPushButton::clicked, this, [this] { m_tool = QStringLiteral("space"); m_plane->setTool(m_tool, m_edge); });
-    connect(edgeButton, &QPushButton::clicked, this, [this] { m_tool = QStringLiteral("edge"); m_plane->setTool(m_tool, m_edge); });
+    connect(placeButton, &QPushButton::clicked, this, [this] { m_tool = QStringLiteral("place"); m_plane->setTool(m_tool, m_edge); });
     connect(m_edgeBox, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) { m_edge = index; m_plane->setTool(m_tool, m_edge); });
     connect(m_plane, &JudgePlane::notePlaced, this, &EditorWindow::placeNote);
     connect(m_plane, &JudgePlane::noteSelected, this, &EditorWindow::selectNote);
-    connect(m_plane, &JudgePlane::noteMoved, this, [this](int index, double x, double y) {
+    connect(m_plane, &JudgePlane::noteMoved, this, [this](int index, int tick, int lane) {
         if (index < 0 || index >= m_chart.notes.size()) return;
         Note &note = m_chart.notes[index];
-        if (note.type == QStringLiteral("EdgeNote"))
-            note.pos = note.edge < 2 ? y : x;
-        else { note.x = x; note.y = y; }
+        note.tick = tick;
+        if (lane < 4) {
+            note.type = QStringLiteral("EdgeNote");
+            note.edge = lane;
+            note.pos = lane < 2 ? 4.5 : 6.0;
+        } else {
+            note.type = QStringLiteral("SpaceNote");
+            note.x = 6.0;
+            note.y = 4.5;
+        }
         markDirty(); refresh();
     });
     connect(m_noteList, &QListWidget::currentRowChanged, this, [this](int row) { if (row >= 0) selectNote(row); });
@@ -356,8 +389,10 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
 void EditorWindow::updateStatus(const QString &message)
 {
     m_status->setText(message.isEmpty()
-        ? QStringLiteral("%1　·　12 × 9 判面　·　%2 个音符%3").arg(m_dirty ? QStringLiteral("未保存") : QStringLiteral("就绪"))
-              .arg(m_chart.notes.size()).arg(m_chartPath.isEmpty() ? QString() : QStringLiteral("　·　") + QFileInfo(m_chartPath).fileName())
+        ? QStringLiteral("%1　·　BPM %2　·　每拍 %3 分音　·　%4 个音符%5")
+              .arg(m_dirty ? QStringLiteral("未保存") : QStringLiteral("就绪"))
+              .arg(m_chart.bpm).arg(m_chart.subdivision).arg(m_chart.notes.size())
+              .arg(m_chartPath.isEmpty() ? QString() : QStringLiteral("　·　") + QFileInfo(m_chartPath).fileName())
         : message);
 }
 
@@ -369,6 +404,7 @@ void EditorWindow::markDirty()
 
 void EditorWindow::refresh()
 {
+    m_plane->setSubdivision(m_chart.subdivision);
     m_plane->setNotes(&m_chart.notes, m_selected);
     m_noteList->blockSignals(true);
     m_noteList->clear();
@@ -455,6 +491,8 @@ void EditorWindow::newBundle()
     m_chartPath = QDir(destination).filePath(title + QStringLiteral(".json"));
     m_selected = -1;
     m_title->setText(title);
+    m_bpm->setValue(m_chart.bpm);
+    m_subdivision->setValue(m_chart.subdivision);
     m_dirty = false;
     refresh();
     updateStatus(QStringLiteral("曲包已创建　·　%1").arg(destination));
@@ -480,6 +518,8 @@ void EditorWindow::openChart()
     m_chartPath = path;
     m_selected = -1;
     m_title->setText(m_chart.title);
+    m_bpm->setValue(m_chart.bpm);
+    m_subdivision->setValue(m_chart.subdivision);
     m_dirty = false;
     refresh();
     updateStatus();
@@ -503,22 +543,36 @@ bool EditorWindow::saveChartFile()
     return true;
 }
 
-void EditorWindow::placeNote(double x, double y)
+void EditorWindow::placeNote(int tick, int lane)
 {
-    bool ok = false;
-    const int tick = m_tick->text().toInt(&ok);
-    if (!ok) { QMessageBox::warning(this, QStringLiteral("无法放置音符"), QStringLiteral("tick 必须为整数。")); return; }
     Note note;
-    note.kind = m_kind->currentText(); note.tick = tick; note.isFake = m_fake->isChecked();
-    if (m_tool == QStringLiteral("edge")) {
-        note.type = QStringLiteral("EdgeNote"); note.edge = m_edge;
-        note.pos = m_edge < 2 ? y : x;
+    note.kind = m_kind->currentText();
+    note.tick = tick;
+    note.isFake = m_fake->isChecked();
+    if (lane < 4) {
+        note.type = QStringLiteral("EdgeNote");
+        note.edge = lane;
+        note.pos = lane < 2 ? 4.5 : 6.0;
     } else {
-        note.type = QStringLiteral("SpaceNote"); note.x = x; note.y = y;
+        note.type = QStringLiteral("SpaceNote");
+        note.x = 6.0;
+        note.y = 4.5;
     }
     m_chart.notes.append(note);
     m_selected = m_chart.notes.size() - 1;
-    markDirty(); refresh(); selectNote(m_selected);
+    m_tick->setText(QString::number(tick));
+    markDirty();
+    refresh();
+    selectNote(m_selected);
+}
+
+void EditorWindow::setTiming(int bpm, int subdivision)
+{
+    if (m_chart.bpm == bpm && m_chart.subdivision == subdivision) return;
+    m_chart.bpm = bpm;
+    m_chart.subdivision = subdivision;
+    m_plane->setSubdivision(subdivision);
+    markDirty();
 }
 
 void EditorWindow::selectNote(int index)
@@ -543,7 +597,10 @@ void EditorWindow::applyProperties()
     if (!ok) { QMessageBox::warning(this, QStringLiteral("属性无效"), QStringLiteral("tick 必须为整数。")); return; }
     Note &note = m_chart.notes[m_selected];
     note.kind = m_kind->currentText(); note.tick = tick; note.isFake = m_fake->isChecked();
-    if (note.type == QStringLiteral("EdgeNote")) note.edge = m_edgeBox->currentIndex();
+    if (note.type == QStringLiteral("EdgeNote")) {
+        note.edge = m_edgeBox->currentIndex();
+        note.pos = note.edge < 2 ? 4.5 : 6.0;
+    }
     markDirty(); refresh();
 }
 
@@ -557,8 +614,7 @@ void EditorWindow::duplicateSelected()
 {
     if (m_selected < 0 || m_selected >= m_chart.notes.size()) return;
     Note note = m_chart.notes.at(m_selected);
-    if (note.type == QStringLiteral("EdgeNote")) note.pos = qMin(note.pos + .5, note.edge < 2 ? PlaneHeight : PlaneWidth);
-    else { note.x = qMin(note.x + .5, PlaneWidth); note.y = qMin(note.y + .5, PlaneHeight); }
+    ++note.tick;
     m_chart.notes.append(note); m_selected = m_chart.notes.size() - 1; markDirty(); refresh();
 }
 

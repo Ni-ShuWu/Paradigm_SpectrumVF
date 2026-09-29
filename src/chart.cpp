@@ -11,6 +11,22 @@ namespace {
 constexpr int GridWidth = 12;
 constexpr int GridHeight = 9;
 
+bool readInteger(const QJsonObject &object, const QString &key, int fallback, int minimum, int maximum, int *value)
+{
+    const QJsonValue jsonValue = object.value(key);
+    if (jsonValue.isUndefined()) {
+        *value = fallback;
+        return true;
+    }
+    if (!jsonValue.isDouble())
+        return false;
+    const double number = jsonValue.toDouble();
+    if (!std::isfinite(number) || std::floor(number) != number || number < minimum || number > maximum)
+        return false;
+    *value = static_cast<int>(number);
+    return true;
+}
+
 bool readNumber(const QJsonObject &object, const QString &key, double max, double *value)
 {
     const QJsonValue jsonValue = object.value(key);
@@ -56,6 +72,7 @@ QJsonObject Chart::toJson() const
         noteArray.append(note.toJson());
     QJsonObject object{{QStringLiteral("format"), QStringLiteral("ParadigmOriginChart")},
                        {QStringLiteral("version"), 1}, {QStringLiteral("title"), title},
+                       {QStringLiteral("bpm"), bpm}, {QStringLiteral("subdivision"), subdivision},
                        {QStringLiteral("notes"), noteArray}};
     if (!musicPath.isEmpty() || !jacketPath.isEmpty()) {
         QJsonObject assets;
@@ -95,6 +112,11 @@ std::optional<Chart> Chart::fromJson(const QByteArray &data, QString *error)
 
     Chart chart;
     chart.title = root.value(QStringLiteral("title")).toString(QStringLiteral("未命名谱面"));
+    if (!readInteger(root, QStringLiteral("bpm"), 120, 1, 1000, &chart.bpm)
+        || !readInteger(root, QStringLiteral("subdivision"), 4, 1, 64, &chart.subdivision)) {
+        if (error) *error = QStringLiteral("BPM 必须是 1～1000 的整数，分音必须是 1～64 的整数。");
+        return std::nullopt;
+    }
     const QJsonObject assets = root.value(QStringLiteral("assets")).toObject();
     chart.musicPath = assets.value(QStringLiteral("music")).toString();
     chart.jacketPath = assets.value(QStringLiteral("jacket")).toString();

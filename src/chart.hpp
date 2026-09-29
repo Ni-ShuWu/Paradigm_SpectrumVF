@@ -22,6 +22,8 @@ struct Note {
 
 struct Chart {
     QString title = QStringLiteral("未命名谱面");
+    int bpm = 120;
+    int subdivision = 4;
     QVector<Note> notes;
     QString musicPath;
     QString jacketPath;
