@@ -73,7 +73,7 @@ QJsonObject Chart::toJson() const
     QJsonObject object{{QStringLiteral("format"), QStringLiteral("ParadigmOriginChart")},
                        {QStringLiteral("version"), 1}, {QStringLiteral("title"), title},
                        {QStringLiteral("bpm"), bpm}, {QStringLiteral("subdivision"), subdivision},
-                       {QStringLiteral("notes"), noteArray}};
+                       {QStringLiteral("beatsPerMeasure"), beatsPerMeasure}, {QStringLiteral("notes"), noteArray}};
     if (!musicPath.isEmpty() || !jacketPath.isEmpty()) {
         QJsonObject assets;
         if (!musicPath.isEmpty()) assets.insert(QStringLiteral("music"), musicPath);
@@ -113,8 +113,9 @@ std::optional<Chart> Chart::fromJson(const QByteArray &data, QString *error)
     Chart chart;
     chart.title = root.value(QStringLiteral("title")).toString(QStringLiteral("未命名谱面"));
     if (!readInteger(root, QStringLiteral("bpm"), 120, 1, 1000, &chart.bpm)
-        || !readInteger(root, QStringLiteral("subdivision"), 4, 1, 64, &chart.subdivision)) {
-        if (error) *error = QStringLiteral("BPM 必须是 1～1000 的整数，分音必须是 1～64 的整数。");
+        || !readInteger(root, QStringLiteral("subdivision"), 4, 1, 64, &chart.subdivision)
+        || !readInteger(root, QStringLiteral("beatsPerMeasure"), 4, 1, 32, &chart.beatsPerMeasure)) {
+        if (error) *error = QStringLiteral("BPM 必须是 1～1000 的整数，分音必须是 1～64 的整数，每小节拍数必须是 1～32 的整数。");
         return std::nullopt;
     }
     const QJsonObject assets = root.value(QStringLiteral("assets")).toObject();

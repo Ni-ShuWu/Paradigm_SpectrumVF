@@ -14,11 +14,15 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
+#include <QMenuBar>
+#include <QSplitter>
 #include <QListWidget>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPixmap>
 #include <QPushButton>
 #include <QSizePolicy>
 #include <QShortcut>
@@ -29,6 +33,7 @@
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QSpinBox>
+#include <QStatusBar>
 #include <QStandardPaths>
 #include <QDirIterator>
 
@@ -38,23 +43,23 @@ constexpr int LaneWidth = 92;
 constexpr int TickHeight = 24;
 constexpr int HeaderHeight = 32;
 constexpr int MinimumTicks = 64;
-const QColor Bg("#101715");
-const QColor Panel("#18211d");
-const QColor Raised("#202c26");
-const QColor Grid("#34453b");
-const QColor Text("#f1f0e6");
-const QColor Muted("#91a497");
-const QColor Mint("#83f0b2");
-const QColor Cyan("#84cde0");
-const QColor Amber("#eeae6a");
+const QColor Bg("#191a1c");
+const QColor Panel("#202123");
+const QColor Raised("#2b2c2f");
+const QColor Grid("#393a3d");
+const QColor Text("#e7e7e8");
+const QColor Muted("#898b90");
+const QColor Mint("#48a9ff");
+const QColor Cyan("#55d7ee");
+const QColor Amber("#ffb85c");
 
 QPushButton *button(const QString &text, QWidget *parent, bool primary = false)
 {
     auto *result = new QPushButton(text, parent);
     result->setCursor(Qt::PointingHandCursor);
     result->setStyleSheet(primary
-        ? "QPushButton{background:#83f0b2;color:#122019;border:0;padding:9px 14px;font-weight:600} QPushButton:hover{background:#a5f8c8}"
-        : "QPushButton{background:#202c26;color:#f1f0e6;border:0;padding:9px 14px} QPushButton:hover{background:#34473a}");
+        ? "QPushButton{background:#48a9ff;color:#101820;border:0;padding:9px 14px;font-weight:600} QPushButton:hover{background:#79bdff}"
+        : "QPushButton{background:#2b2c2f;color:#e7e7e8;border:0;padding:9px 14px} QPushButton:hover{background:#393a3d}");
     return result;
 }
 
@@ -78,6 +83,50 @@ bool isAllowedExtension(const QString &path, const QStringList &extensions)
     return extensions.contains(QFileInfo(path).suffix().toLower());
 }
 }
+
+class CircularPreview : public QLabel {
+public:
+    explicit CircularPreview(QWidget *parent = nullptr) : QLabel(parent)
+    {
+        setAlignment(Qt::AlignCenter);
+        setMinimumSize(240, 240);
+        setStyleSheet("background:#202123;color:#898b90");
+    }
+
+    void setCover(const QPixmap &cover)
+    {
+        m_cover = cover;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QLabel::paintEvent(event);
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        const int side = qMin(width(), height()) - 8;
+        const QRectF circle((width() - side) / 2.0, (height() - side) / 2.0, side, side);
+        if (m_cover.isNull()) {
+            painter.setPen(QColor("#898b90"));
+            painter.drawText(circle, Qt::AlignCenter, QStringLiteral("曲绘将在此预览"));
+        } else {
+            const QPixmap scaled = m_cover.scaled(side, side, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+            QPainterPath clip;
+            clip.addEllipse(circle);
+            painter.setClipPath(clip);
+            painter.drawPixmap(QRect((width() - side) / 2, (height() - side) / 2, side, side), scaled,
+                               QRect((scaled.width() - side) / 2, (scaled.height() - side) / 2, side, side));
+            painter.setClipping(false);
+            painter.setPen(QPen(QColor("#e7e7e8"), 2));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawEllipse(circle);
+        }
+    }
+
+private:
+    QPixmap m_cover;
+};
 
 JudgePlane::JudgePlane(QWidget *parent) : QWidget(parent)
 {
@@ -104,9 +153,10 @@ void JudgePlane::setTool(const QString &tool, int edge)
     setCursor(tool == QStringLiteral("select") ? Qt::ArrowCursor : Qt::CrossCursor);
 }
 
-void JudgePlane::setSubdivision(int subdivision)
+void JudgePlane::setTimingGrid(int subdivision, int beatsPerMeasure)
 {
     m_subdivision = subdivision;
+    m_beatsPerMeasure = beatsPerMeasure;
     update();
 }
 
@@ -178,7 +228,7 @@ void JudgePlane::paintEvent(QPaintEvent *)
     for (int tick = 0; tick <= lastTick; ++tick) {
         const double y = HeaderHeight + tick * TickHeight;
         const bool beat = tick % m_subdivision == 0;
-        const bool measure = tick % (m_subdivision * 4) == 0;
+        const bool measure = tick % (m_subdivision * m_beatsPerMeasure) == 0;
         painter.setPen(QPen(measure ? QColor("#788f7c") : (beat ? Grid : QColor("#24332a")), measure ? 1.4 : (beat ? 1.0 : 0.6)));
         painter.drawLine(QPointF(0, y), QPointF(width(), y));
         if (tick % m_subdivision == 0) {
@@ -232,128 +282,164 @@ void JudgePlane::mouseReleaseEvent(QMouseEvent *event)
 EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
 {
     setWindowTitle(QStringLiteral("范式：起源 · 制谱器"));
-    resize(1180, 800);
-    setMinimumSize(920, 650);
-    setStyleSheet("QMainWindow{background:#101715;color:#f1f0e6} QWidget{color:#f1f0e6;font-family:'Microsoft YaHei UI'} QLineEdit,QComboBox,QListWidget{background:#202c26;border:1px solid #34453b;padding:7px;color:#f1f0e6} QComboBox QAbstractItemView{background:#202c26;selection-background-color:#2d4939} QCheckBox{spacing:8px} QCheckBox::indicator{width:15px;height:15px} QCheckBox::indicator:checked{background:#83f0b2;border:1px solid #83f0b2}");
+    resize(1500, 900);
+    setMinimumSize(1080, 680);
+    setStyleSheet("QMainWindow{background:#191a1c;color:#e7e7e8} QWidget{color:#e7e7e8;font-family:'Microsoft YaHei UI'} QLineEdit,QComboBox,QListWidget,QSpinBox{background:#252629;border:1px solid #414246;padding:6px;color:#e7e7e8} QComboBox QAbstractItemView{background:#252629;selection-background-color:#315274} QCheckBox{spacing:8px} QCheckBox::indicator{width:15px;height:15px} QCheckBox::indicator:checked{background:#48a9ff;border:1px solid #48a9ff} QMenuBar{background:#292a2d;color:#e7e7e8;padding:4px} QMenuBar::item:selected,QMenu::item:selected{background:#393a3d} QMenu{background:#292a2d;border:1px solid #414246} QStatusBar{background:#292a2d;color:#a7a8ab}");
+
+    auto *fileMenu = menuBar()->addMenu(QStringLiteral("文件(F)"));
+    auto *editMenu = menuBar()->addMenu(QStringLiteral("编辑(E)"));
+    auto *optionsMenu = menuBar()->addMenu(QStringLiteral("选项(O)"));
+    auto *newAction = fileMenu->addAction(QStringLiteral("新建曲包"));
+    auto *openAction = fileMenu->addAction(QStringLiteral("打开谱面…"));
+    fileMenu->addSeparator();
+    auto *saveAction = fileMenu->addAction(QStringLiteral("保存"));
+    saveAction->setShortcut(QKeySequence::Save);
+    auto *copyAction = editMenu->addAction(QStringLiteral("复制音符"));
+    copyAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+D")));
+    auto *deleteAction = editMenu->addAction(QStringLiteral("删除音符"));
+    deleteAction->setShortcut(QKeySequence(Qt::Key_Delete));
+    auto *selectAction = optionsMenu->addAction(QStringLiteral("选取 / 移动工具"));
+    auto *placeAction = optionsMenu->addAction(QStringLiteral("放置音符工具"));
 
     auto *central = new QWidget(this);
     auto *root = new QVBoxLayout(central);
-    root->setContentsMargins(20, 14, 20, 16);
-    root->setSpacing(12);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(0);
     auto *header = new QHBoxLayout;
+    header->setContentsMargins(16, 8, 16, 8);
     auto *brand = new QLabel(QStringLiteral("范式：起源"), central);
-    brand->setStyleSheet("font-size:21px;font-weight:700");
+    brand->setStyleSheet("font-size:16px;font-weight:700");
     header->addWidget(brand);
-    auto *tag = new QLabel(QStringLiteral("/  SCORE EDITOR"), central);
-    tag->setStyleSheet("color:#83f0b2;font-family:Consolas;font-weight:700");
-    header->addWidget(tag);
     header->addStretch();
     m_status = new QLabel(central);
-    m_status->setStyleSheet("color:#91a497;font-family:Consolas");
+    m_status->setStyleSheet("color:#48a9ff;font-family:Consolas");
     header->addWidget(m_status);
     root->addLayout(header);
 
-    auto *toolbar = new QHBoxLayout;
-    auto *newButton = button(QStringLiteral("新建曲包"), central);
-    auto *openButton = button(QStringLiteral("打开 JSON"), central);
-    auto *saveButton = button(QStringLiteral("保存"), central, true);
-    toolbar->addWidget(newButton); toolbar->addWidget(openButton); toolbar->addWidget(saveButton);
-    toolbar->addSpacing(10);
-    toolbar->addWidget(new QLabel(QStringLiteral("谱面名称"), central));
-    m_title = new QLineEdit(m_chart.title, central);
-    m_title->setMaximumWidth(260);
-    toolbar->addWidget(m_title); toolbar->addStretch();
-    root->addLayout(toolbar);
-
-    auto *body = new QHBoxLayout;
-    body->setSpacing(14);
-    auto *work = new QWidget(central);
-    work->setStyleSheet("background:#18211d");
+    auto *columns = new QSplitter(Qt::Horizontal, central);
+    columns->setChildrenCollapsible(false);
+    auto *work = new QWidget(columns);
+    work->setStyleSheet("background:#202123");
     auto *workLayout = new QVBoxLayout(work);
-    workLayout->setContentsMargins(14, 12, 14, 12);
-    auto *caption = new QHBoxLayout;
-    auto *cap = new QLabel(QStringLiteral("五轨时间轴"), work);
-    cap->setStyleSheet("color:#91a497;font-family:Consolas;font-weight:700");
-    caption->addWidget(cap);
-    caption->addStretch();
-    caption->addWidget(new QLabel(QStringLiteral("BPM"), work));
-    m_bpm = new QSpinBox(work);
-    m_bpm->setRange(1, 1000);
-    m_bpm->setValue(m_chart.bpm);
-    m_bpm->setFixedWidth(84);
-    caption->addWidget(m_bpm);
-    caption->addWidget(new QLabel(QStringLiteral("每拍分音"), work));
-    m_subdivision = new QSpinBox(work);
-    m_subdivision->setRange(1, 64);
-    m_subdivision->setValue(m_chart.subdivision);
-    m_subdivision->setFixedWidth(72);
-    caption->addWidget(m_subdivision);
-    workLayout->addLayout(caption);
+    workLayout->setContentsMargins(10, 8, 10, 8);
+    auto *timelineCaption = new QLabel(QStringLiteral("五轨时间轴"), work);
+    timelineCaption->setStyleSheet("color:#898b90;font-size:12px");
+    workLayout->addWidget(timelineCaption);
     m_plane = new JudgePlane(work);
     m_timelineScroll = new QScrollArea(work);
     m_timelineScroll->setWidgetResizable(true);
     m_timelineScroll->setFrameShape(QFrame::NoFrame);
     m_timelineScroll->setWidget(m_plane);
     workLayout->addWidget(m_timelineScroll, 1);
-    auto *legend = new QLabel(QStringLiteral("0–3：四边音符　·　判定区：区内音符　·　每格为一个分音 tick　·　点击放置 / 拖动移动"), work);
-    legend->setStyleSheet("color:#91a497;padding:4px");
+    auto *legend = new QLabel(QStringLiteral("0–3：边线　·　判定区：区内音符　·　每格 = 1 tick"), work);
+    legend->setStyleSheet("color:#898b90;padding:5px 0");
     workLayout->addWidget(legend);
-    body->addWidget(work, 1);
+    columns->addWidget(work);
 
-    auto *side = new QWidget(central);
-    side->setFixedWidth(292);
-    side->setStyleSheet("background:#18211d");
+    auto *centerScroll = new QScrollArea(columns);
+    centerScroll->setWidgetResizable(true);
+    centerScroll->setFrameShape(QFrame::NoFrame);
+    auto *side = new QWidget(centerScroll);
+    side->setMinimumWidth(330);
+    side->setStyleSheet("background:#191a1c");
     auto *sideLayout = new QVBoxLayout(side);
-    sideLayout->setContentsMargins(14, 14, 14, 14);
-    auto *toolsLabel = new QLabel(QStringLiteral("TOOLS  /  工具"), side);
-    toolsLabel->setStyleSheet("color:#91a497;font-family:Consolas;font-weight:700");
-    sideLayout->addWidget(toolsLabel);
-    auto *selectButton = button(QStringLiteral("↖ 选取 / 移动"), side);
-    auto *placeButton = button(QStringLiteral("＋ 放置音符"), side);
-    sideLayout->addWidget(selectButton);
-    sideLayout->addWidget(placeButton);
-    sideLayout->addSpacing(8);
-    auto *propsLabel = new QLabel(QStringLiteral("NOTE  /  音符属性"), side);
-    propsLabel->setStyleSheet("color:#91a497;font-family:Consolas;font-weight:700");
-    sideLayout->addWidget(propsLabel);
-    sideLayout->addWidget(new QLabel(QStringLiteral("音符种类"), side));
+    sideLayout->setContentsMargins(12, 0, 12, 10);
+    sideLayout->setSpacing(8);
+    auto section = [side](const QString &title) {
+        auto *label = new QLabel(title, side);
+        label->setStyleSheet("background:#252629;color:#d7d8da;padding:8px 9px;font-size:13px");
+        return label;
+    };
+    sideLayout->addWidget(section(QStringLiteral("编辑器设置")));
+    auto *timing = new QFormLayout;
+    timing->setContentsMargins(4, 4, 4, 8);
+    m_bpm = new QSpinBox(side);
+    m_bpm->setRange(1, 1000);
+    m_bpm->setValue(m_chart.bpm);
+    m_subdivision = new QSpinBox(side);
+    m_subdivision->setRange(1, 64);
+    m_subdivision->setValue(m_chart.subdivision);
+    m_beatsPerMeasure = new QSpinBox(side);
+    m_beatsPerMeasure->setRange(1, 32);
+    m_beatsPerMeasure->setValue(m_chart.beatsPerMeasure);
+    timing->addRow(QStringLiteral("BPM"), m_bpm);
+    timing->addRow(QStringLiteral("每拍分音"), m_subdivision);
+    timing->addRow(QStringLiteral("每小节拍数"), m_beatsPerMeasure);
+    sideLayout->addLayout(timing);
+    auto *toolsHeader = section(QStringLiteral("音符编辑"));
+    sideLayout->addWidget(toolsHeader);
+    auto *toolRow = new QHBoxLayout;
+    auto *selectButton = button(QStringLiteral("选取 / 移动"), side);
+    auto *placeButton = button(QStringLiteral("＋ 放置音符"), side, true);
+    toolRow->addWidget(selectButton);
+    toolRow->addWidget(placeButton);
+    sideLayout->addLayout(toolRow);
+    auto *props = new QFormLayout;
     m_kind = new QComboBox(side);
     m_kind->addItems({QStringLiteral("tap"), QStringLiteral("link"), QStringLiteral("slider")});
-    sideLayout->addWidget(m_kind);
-    sideLayout->addWidget(new QLabel(QStringLiteral("边线位置（对应轨道 0–3）"), side));
     m_edgeBox = new QComboBox(side);
     m_edgeBox->addItems({QStringLiteral("0 · 左边线"), QStringLiteral("1 · 右边线"), QStringLiteral("2 · 上边线"), QStringLiteral("3 · 下边线")});
-    sideLayout->addWidget(m_edgeBox);
-    sideLayout->addWidget(new QLabel(QStringLiteral("tick（分音格编号）"), side));
     m_tick = new QLineEdit(QStringLiteral("0"), side);
-    sideLayout->addWidget(m_tick);
-    m_fake = new QCheckBox(QStringLiteral("假音符（不参与判定）"), side);
-    sideLayout->addWidget(m_fake);
-    auto *apply = button(QStringLiteral("应用属性到选中音符"), side, true);
+    m_fake = new QCheckBox(QStringLiteral("假音符"), side);
+    props->addRow(QStringLiteral("音符种类"), m_kind);
+    props->addRow(QStringLiteral("边线轨道"), m_edgeBox);
+    props->addRow(QStringLiteral("Tick"), m_tick);
+    props->addRow(QString(), m_fake);
+    sideLayout->addLayout(props);
+    auto *apply = button(QStringLiteral("应用到选中音符"), side, true);
     sideLayout->addWidget(apply);
-    auto *listHeader = new QHBoxLayout;
-    auto *listLabel = new QLabel(QStringLiteral("NOTES  /  音符列表"), side);
-    listLabel->setStyleSheet("color:#91a497;font-family:Consolas;font-weight:700");
-    listHeader->addWidget(listLabel); listHeader->addStretch();
+    sideLayout->addWidget(section(QStringLiteral("音符列表")));
     m_noteList = new QListWidget(side);
     m_noteList->setSelectionMode(QAbstractItemView::SingleSelection);
-    sideLayout->addLayout(listHeader);
+    m_noteList->setMinimumHeight(130);
     sideLayout->addWidget(m_noteList, 1);
     auto *actions = new QHBoxLayout;
     auto *duplicate = button(QStringLiteral("复制"), side);
     auto *remove = button(QStringLiteral("删除"), side);
-    actions->addWidget(duplicate); actions->addWidget(remove);
+    actions->addWidget(duplicate);
+    actions->addWidget(remove);
     sideLayout->addLayout(actions);
-    body->addWidget(side);
-    root->addLayout(body, 1);
+    centerScroll->setWidget(side);
+    columns->addWidget(centerScroll);
+
+    auto *preview = new QWidget(columns);
+    preview->setStyleSheet("background:#191a1c");
+    auto *previewLayout = new QVBoxLayout(preview);
+    previewLayout->setContentsMargins(14, 10, 14, 10);
+    previewLayout->addWidget(new QLabel(QStringLiteral("判定区 / 曲绘预览"), preview));
+    m_coverPreview = new CircularPreview(preview);
+    previewLayout->addWidget(m_coverPreview, 1, Qt::AlignCenter);
+    previewLayout->addWidget(section(QStringLiteral("谱面信息")));
+    auto *metadata = new QFormLayout;
+    m_title = new QLineEdit(m_chart.title, preview);
+    metadata->addRow(QStringLiteral("曲名"), m_title);
+    auto *musicLabel = new QLabel(QStringLiteral("未导入音乐"), preview);
+    musicLabel->setObjectName(QStringLiteral("musicPathLabel"));
+    metadata->addRow(QStringLiteral("音乐"), musicLabel);
+    auto *coverLabel = new QLabel(QStringLiteral("未设置曲绘"), preview);
+    coverLabel->setObjectName(QStringLiteral("coverPathLabel"));
+    metadata->addRow(QStringLiteral("曲绘"), coverLabel);
+    previewLayout->addLayout(metadata);
+    columns->addWidget(preview);
+    columns->setStretchFactor(0, 4);
+    columns->setStretchFactor(1, 5);
+    columns->setStretchFactor(2, 5);
+    columns->setSizes({360, 500, 500});
+    root->addWidget(columns, 1);
+    statusBar()->showMessage(QStringLiteral("就绪"));
     setCentralWidget(central);
 
-    connect(newButton, &QPushButton::clicked, this, &EditorWindow::newBundle);
-    connect(openButton, &QPushButton::clicked, this, &EditorWindow::openChart);
-    connect(saveButton, &QPushButton::clicked, this, [this] { saveChartFile(); });
+    connect(newAction, &QAction::triggered, this, &EditorWindow::newBundle);
+    connect(openAction, &QAction::triggered, this, &EditorWindow::openChart);
+    connect(saveAction, &QAction::triggered, this, [this] { saveChartFile(); });
+    connect(copyAction, &QAction::triggered, this, &EditorWindow::duplicateSelected);
+    connect(deleteAction, &QAction::triggered, this, &EditorWindow::deleteSelected);
+    connect(selectAction, &QAction::triggered, this, [this] { m_tool = QStringLiteral("select"); m_plane->setTool(m_tool, m_edge); });
+    connect(placeAction, &QAction::triggered, this, [this] { m_tool = QStringLiteral("place"); m_plane->setTool(m_tool, m_edge); });
     connect(m_title, &QLineEdit::textEdited, this, [this] { m_chart.title = m_title->text(); markDirty(); });
-    connect(m_bpm, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { setTiming(m_bpm->value(), m_subdivision->value()); });
-    connect(m_subdivision, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { setTiming(m_bpm->value(), m_subdivision->value()); });
+    connect(m_bpm, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { setTiming(m_bpm->value(), m_subdivision->value(), m_beatsPerMeasure->value()); });
+    connect(m_subdivision, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { setTiming(m_bpm->value(), m_subdivision->value(), m_beatsPerMeasure->value()); });
+    connect(m_beatsPerMeasure, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { setTiming(m_bpm->value(), m_subdivision->value(), m_beatsPerMeasure->value()); });
     connect(selectButton, &QPushButton::clicked, this, [this] { m_tool = QStringLiteral("select"); m_plane->setTool(m_tool, m_edge); });
     connect(placeButton, &QPushButton::clicked, this, [this] { m_tool = QStringLiteral("place"); m_plane->setTool(m_tool, m_edge); });
     connect(m_edgeBox, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) { m_edge = index; m_plane->setTool(m_tool, m_edge); });
@@ -389,10 +475,15 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
 void EditorWindow::updateStatus(const QString &message)
 {
     m_status->setText(message.isEmpty()
-        ? QStringLiteral("%1　·　BPM %2　·　每拍 %3 分音　·　%4 个音符%5")
+        ? QStringLiteral("%1　·　BPM %2　·　每拍 %3 分音　·　每小节 %4 拍　·　%5 个音符%6")
               .arg(m_dirty ? QStringLiteral("未保存") : QStringLiteral("就绪"))
-              .arg(m_chart.bpm).arg(m_chart.subdivision).arg(m_chart.notes.size())
+              .arg(m_chart.bpm).arg(m_chart.subdivision).arg(m_chart.beatsPerMeasure).arg(m_chart.notes.size())
               .arg(m_chartPath.isEmpty() ? QString() : QStringLiteral("　·　") + QFileInfo(m_chartPath).fileName())
+              .arg(m_chartPath.isEmpty() ? QString() : QStringLiteral("　·　") + QFileInfo(m_chartPath).fileName())
+        : message);
+    statusBar()->showMessage(message.isEmpty()
+        ? QStringLiteral("BPM %1　|　每拍 %2 分音　|　每小节 %3 拍　|　%4 音符")
+              .arg(m_chart.bpm).arg(m_chart.subdivision).arg(m_chart.beatsPerMeasure).arg(m_chart.notes.size())
         : message);
 }
 
@@ -404,13 +495,30 @@ void EditorWindow::markDirty()
 
 void EditorWindow::refresh()
 {
-    m_plane->setSubdivision(m_chart.subdivision);
+    m_plane->setTimingGrid(m_chart.subdivision, m_chart.beatsPerMeasure);
     m_plane->setNotes(&m_chart.notes, m_selected);
     m_noteList->blockSignals(true);
     m_noteList->clear();
     for (const Note &note : m_chart.notes) m_noteList->addItem(noteDescription(note));
     if (m_selected >= 0 && m_selected < m_noteList->count()) m_noteList->setCurrentRow(m_selected);
     m_noteList->blockSignals(false);
+    refreshPreview();
+}
+
+void EditorWindow::refreshPreview()
+{
+    const QString coverPath = m_chartPath.isEmpty() || m_chart.jacketPath.isEmpty()
+        ? QString() : QFileInfo(m_chartPath).dir().filePath(m_chart.jacketPath);
+    QPixmap cover;
+    if (!coverPath.isEmpty()) cover.load(coverPath);
+    m_coverPreview->setCover(cover);
+    const auto labels = findChildren<QLabel *>();
+    for (QLabel *label : labels) {
+        if (label->objectName() == QStringLiteral("musicPathLabel"))
+            label->setText(m_chart.musicPath.isEmpty() ? QStringLiteral("未导入音乐") : m_chart.musicPath);
+        else if (label->objectName() == QStringLiteral("coverPathLabel"))
+            label->setText(m_chart.jacketPath.isEmpty() ? QStringLiteral("未设置曲绘") : m_chart.jacketPath);
+    }
 }
 
 bool EditorWindow::confirmDiscard()
@@ -493,6 +601,7 @@ void EditorWindow::newBundle()
     m_title->setText(title);
     m_bpm->setValue(m_chart.bpm);
     m_subdivision->setValue(m_chart.subdivision);
+    m_beatsPerMeasure->setValue(m_chart.beatsPerMeasure);
     m_dirty = false;
     refresh();
     updateStatus(QStringLiteral("曲包已创建　·　%1").arg(destination));
@@ -520,6 +629,7 @@ void EditorWindow::openChart()
     m_title->setText(m_chart.title);
     m_bpm->setValue(m_chart.bpm);
     m_subdivision->setValue(m_chart.subdivision);
+    m_beatsPerMeasure->setValue(m_chart.beatsPerMeasure);
     m_dirty = false;
     refresh();
     updateStatus();
@@ -566,12 +676,13 @@ void EditorWindow::placeNote(int tick, int lane)
     selectNote(m_selected);
 }
 
-void EditorWindow::setTiming(int bpm, int subdivision)
+void EditorWindow::setTiming(int bpm, int subdivision, int beatsPerMeasure)
 {
-    if (m_chart.bpm == bpm && m_chart.subdivision == subdivision) return;
+    if (m_chart.bpm == bpm && m_chart.subdivision == subdivision && m_chart.beatsPerMeasure == beatsPerMeasure) return;
     m_chart.bpm = bpm;
     m_chart.subdivision = subdivision;
-    m_plane->setSubdivision(subdivision);
+    m_chart.beatsPerMeasure = beatsPerMeasure;
+    m_plane->setTimingGrid(subdivision, beatsPerMeasure);
     markDirty();
 }
 

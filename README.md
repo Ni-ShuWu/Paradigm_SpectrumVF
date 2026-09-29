@@ -1,6 +1,6 @@
 # 范式：起源 · 制谱器
 
-基于 **C++17 和 Qt 6 Widgets** 的社区同人制谱器。提供五轨时间轴编辑、BPM 与分音设置，并可新建包含音乐、曲绘和 JSON 谱面的独立曲包。
+基于 **C++17 和 Qt 6 Widgets** 的社区同人制谱器。采用三栏深色编辑界面，提供五轨时间轴、可调 BPM / 每拍分音 / 每小节拍数及圆形曲绘预览，并可新建包含音乐、曲绘和 JSON 谱面的独立曲包。
 
 ## 免责声明
 
@@ -34,12 +34,12 @@ ctest --test-dir build --output-on-failure
 
 - 点击“新建曲包”，输入曲包名称，依次选择 MP3/OGG 音乐、JPG/PNG 曲绘和保存位置。应用会复制素材并在新建目录中写入同名 JSON；目录已存在时不会覆盖。
 - 时间轴包含 0、1、2、3 和判定区五条固定轨道。选择“放置音符”后点击轨道与分音格即可创建音符；轨道 0–3 对应四边音符，判定区轨道对应区内音符。
-- 可设置 BPM 和每拍分音数；每个分音格的 `tick` 加 1。音符列表支持选取、复制和删除；“选取 / 移动”可拖动音符；属性栏可设置 `kind`、`tick` 和假音符。
+- 可分别设置 BPM、每拍分音数和每小节拍数；节拍线及小节线按设置更新，每个分音格的 `tick` 加 1。音符列表支持选取、复制和删除；“选取 / 移动”可拖动音符；属性栏可设置 `kind`、`tick` 和假音符。
 - 支持打开 JSON、保存和保存修改。快捷键：`Ctrl+O` 打开、`Ctrl+S` 保存、`Delete` 删除、`Ctrl+D` 复制。
 
 ## JSON 结构
 
-时间轴有 0、1、2、3、判定区五条轨道：前四条映射到 `EdgeNote.edge`（左、右、上、下），边线位置固定在对应边的中点；判定区映射到坐标 (6, 4.5) 的 `SpaceNote`。`bpm` 为 1～1000 的整数，`subdivision` 为每拍分音数（1～64），每个分音格对应一个整数 `tick`。未包含这两个新字段的旧谱默认使用 BPM 120、每拍 4 分音。`isFake` 代表不参与判定的假音符。曲包谱面可选包含相对路径 `assets.music` 和 `assets.jacket`。
+时间轴有 0、1、2、3、判定区五条轨道：前四条映射到 `EdgeNote.edge`（左、右、上、下），边线位置固定在对应边的中点；判定区映射到坐标 (6, 4.5) 的 `SpaceNote`。`bpm` 为 1～1000 的整数，`subdivision` 为每拍分音数（1～64），`beatsPerMeasure` 为每小节拍数（1～32）；每个分音格对应一个整数 `tick`。未包含时序字段的旧谱默认使用 BPM 120、每拍 4 分音、每小节 4 拍。`isFake` 代表不参与判定的假音符。曲包谱面可选包含相对路径 `assets.music` 和 `assets.jacket`。
 
 ```json
 {
@@ -48,6 +48,7 @@ ctest --test-dir build --output-on-failure
   "title": "我的谱面",
   "bpm": 120,
   "subdivision": 4,
+  "beatsPerMeasure": 4,
   "assets": { "music": "music.ogg", "jacket": "jp.png" },
   "notes": [
     { "type": "EdgeNote", "kind": "tap", "edge": 0, "pos": 4.5, "tick": 0, "isFake": false },
