@@ -6,6 +6,7 @@
 #include <QWidget>
 
 class QComboBox;
+class CircularPreview;
 class QLineEdit;
 class QListWidget;
 class QCheckBox;
@@ -20,7 +21,7 @@ public:
     explicit JudgePlane(QWidget *parent = nullptr);
     void setNotes(const QVector<Note> *notes, int selected);
     void setTool(const QString &tool, int edge);
-    void setSubdivision(int subdivision);
+    void setTimingGrid(int subdivision, int beatsPerMeasure);
 signals:
     void notePlaced(int tick, int lane);
     void noteSelected(int index);
@@ -43,6 +44,7 @@ private:
     int m_edge = 0;
     int m_dragIndex = -1;
     int m_subdivision = 4;
+    int m_beatsPerMeasure = 4;
 };
 
 class EditorWindow : public QMainWindow {
@@ -57,8 +59,9 @@ private:
     void openChart();
     bool saveChartFile();
     void placeNote(int tick, int lane);
-    void setTiming(int bpm, int subdivision);
+    void setTiming(int bpm, int subdivision, int beatsPerMeasure);
     void refresh();
+    void refreshPreview();
     void updateStatus(const QString &message = {});
     void markDirty();
     void selectNote(int index);
@@ -78,9 +81,11 @@ private:
     QComboBox *m_edgeBox = nullptr;
     QSpinBox *m_bpm = nullptr;
     QSpinBox *m_subdivision = nullptr;
+    QSpinBox *m_beatsPerMeasure = nullptr;
     QLineEdit *m_tick = nullptr;
     QScrollArea *m_timelineScroll = nullptr;
     QCheckBox *m_fake = nullptr;
     QListWidget *m_noteList = nullptr;
     QLabel *m_status = nullptr;
+    CircularPreview *m_coverPreview = nullptr;
 };
