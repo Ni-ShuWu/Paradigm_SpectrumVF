@@ -1,0 +1,24 @@
+name: 功能建议
+description: 提出新功能或改进现有功能
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决的问题
+      description: 现在的制谱流程哪里不方便？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的方案
+      description: 你希望界面或功能如何表现？
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案
+      description: 可选，你考虑过的其他做法。
