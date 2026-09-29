@@ -1,0 +1,34 @@
+#pragma once
+
+#include <QJsonObject>
+#include <QPointF>
+#include <QString>
+#include <QVector>
+#include <optional>
+
+struct Note {
+    QString type;
+    QString kind = QStringLiteral("tap");
+    int tick = 0;
+    bool isFake = false;
+    int edge = 0;
+    double pos = 0.0;
+    double x = 0.0;
+    double y = 0.0;
+
+    QJsonObject toJson() const;
+    QPointF coordinates() const;
+};
+
+struct Chart {
+    QString title = QStringLiteral("未命名谱面");
+    QVector<Note> notes;
+    QString musicPath;
+    QString jacketPath;
+
+    QJsonObject toJson() const;
+    QByteArray toJsonBytes() const;
+    static std::optional<Chart> fromJson(const QByteArray &data, QString *error = nullptr);
+};
+
+bool saveChart(const QString &path, const Chart &chart, QString *error = nullptr);
