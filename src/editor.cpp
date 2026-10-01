@@ -81,6 +81,12 @@ QString formatPlaybackTime(qint64 milliseconds)
         .arg(seconds % 60, 2, 10, QLatin1Char('0'));
 }
 
+qreal playbackTickAt(qint64 milliseconds, int bpm, int subdivision)
+{
+    if (bpm <= 0 || subdivision <= 0) return -1.0;
+    return milliseconds * static_cast<qreal>(bpm) * subdivision / 60000.0;
+}
+
 qreal pointToSegmentDistance(const QPointF &point, const QPointF &start, const QPointF &end)
 {
     const QPointF segment = end - start;
@@ -553,6 +559,17 @@ void JudgePlane::setTimingGrid(int subdivision, int beatsPerMeasure)
 {
     m_subdivision = subdivision;
     m_beatsPerMeasure = beatsPerMeasure;
+    resize(width(), contentHeight());
+    update();
+}
+
+void JudgePlane::setPlaybackTick(qreal tick, int durationTicks)
+{
+    m_playbackTick = tick;
+    if (m_durationTicks != durationTicks) {
+        m_durationTicks = durationTicks;
+        resize(width(), contentHeight());
+    }
     update();
 }
 
@@ -578,7 +595,7 @@ int JudgePlane::laneAt(double x) const
 
 int JudgePlane::contentHeight() const
 {
-    int lastTick = MinimumTicks - 1;
+    int lastTick = qMax(MinimumTicks - 1, m_durationTicks);
     if (m_notes) {
         for (const Note &note : *m_notes)
             lastTick = qMax(lastTick, note.isLong() ? note.endTick : note.tick);
@@ -664,6 +681,16 @@ void JudgePlane::paintEvent(QPaintEvent *)
         painter.drawText(cell.adjusted(2, 2, -2, -2), Qt::AlignTop | Qt::AlignHCenter,
                          note.isLong() ? QStringLiteral("%1 · %2→%3").arg(note.kind).arg(note.tick).arg(note.endTick)
                                        : QStringLiteral("%1 · %2").arg(note.kind).arg(note.tick));
+    }
+    if (m_playbackTick >= 0.0) {
+        const qreal y = HeaderHeight + m_playbackTick * TickHeight;
+        if (y <= height()) {
+            painter.setPen(QPen(QColor("#ff5f73"), 2));
+            painter.drawLine(QPointF(0, y), QPointF(width(), y));
+            painter.setBrush(QColor("#ff5f73"));
+            painter.setPen(Qt::NoPen);
+            painter.drawPolygon(QPolygonF{QPointF(0, y - 6), QPointF(9, y), QPointF(0, y + 6)});
+        }
     }
 }
 
@@ -1029,8 +1056,8 @@ void EditorWindow::refreshPreview()
     if (!coverPath.isEmpty()) cover.load(coverPath);
     const bool playing = m_mediaPlayer && m_mediaPlayer->playbackState() == QMediaPlayer::PlayingState;
     const bool placementMode = m_tool == QStringLiteral("place");
-    const qreal playbackTick = m_currentPlaybackPosition * static_cast<qreal>(m_chart.bpm)
-        * m_chart.subdivision / 60000.0;
+    const qreal playbackTick = playbackTickAt(m_currentPlaybackPosition,
+                                                m_chart.bpm, m_chart.subdivision);
     m_coverPreview->setChart(cover, &m_chart.notes, m_selected, m_chart.bpm,
                              m_chart.subdivision, m_chart.beatsPerMeasure,
                              m_mediaPlayer && m_mediaPlayer->source().isEmpty() ? -1.0 : playbackTick,
@@ -1368,13 +1395,19 @@ void EditorWindow::updatePlaybackTick(qint64 position)
     m_currentPlaybackPosition = position;
     const bool hasMusic = m_mediaPlayer && !m_mediaPlayer->source().isEmpty();
     qreal preciseTick = -1.0;
-    if (hasMusic && m_chart.bpm > 0 && m_chart.subdivision > 0) {
-        preciseTick = position * static_cast<qreal>(m_chart.bpm)
-            * m_chart.subdivision / 60000.0;
+    if (hasMusic) {
+        preciseTick = playbackTickAt(position, m_chart.bpm, m_chart.subdivision);
         m_currentPlaybackTick = static_cast<int>(qMin<qreal>(preciseTick,
             std::numeric_limits<int>::max()));
     } else {
         m_currentPlaybackTick = -1;
+    }
+    const qreal durationTick = hasMusic
+        ? playbackTickAt(m_mediaPlayer->duration(), m_chart.bpm, m_chart.subdivision) : 0.0;
+    m_plane->setPlaybackTick(preciseTick, qMax(0, qCeil(durationTick)));
+    if (hasMusic && preciseTick >= 0.0 && m_timelineScroll) {
+        const int playbackY = HeaderHeight + qRound(preciseTick * TickHeight);
+        m_timelineScroll->ensureVisible(0, playbackY, 0, TickHeight * 2);
     }
     m_coverPreview->setPlaybackPosition(preciseTick,
         hasMusic && m_mediaPlayer->playbackState() == QMediaPlayer::PlayingState);

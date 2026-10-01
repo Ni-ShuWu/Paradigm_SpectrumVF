@@ -26,6 +26,7 @@ public:
     void setNotes(const QVector<Note> *notes, int selected);
     void setTool(const QString &tool, int edge);
     void setTimingGrid(int subdivision, int beatsPerMeasure);
+    void setPlaybackTick(qreal tick, int durationTicks);
 signals:
     void notePlaced(int tick, int lane);
     void noteSelected(int index);
@@ -50,6 +51,8 @@ private:
     bool m_resizeEnd = false;
     int m_subdivision = 4;
     int m_beatsPerMeasure = 4;
+    qreal m_playbackTick = -1.0;
+    int m_durationTicks = 0;
 };
 
 class EditorWindow : public QMainWindow {
