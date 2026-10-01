@@ -29,7 +29,7 @@ public:
 signals:
     void notePlaced(int tick, int lane);
     void noteSelected(int index);
-    void noteMoved(int index, int tick, int lane);
+    void noteMoved(int index, int tick, int lane, bool resizeEnd);
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
@@ -47,6 +47,7 @@ private:
     QString m_tool = QStringLiteral("select");
     int m_edge = 0;
     int m_dragIndex = -1;
+    bool m_resizeEnd = false;
     int m_subdivision = 4;
     int m_beatsPerMeasure = 4;
 };
@@ -73,7 +74,7 @@ private:
     void deleteSelected();
     void duplicateSelected();
     void placePreviewNote(int tick, qreal x, qreal y);
-    void movePreviewNote(int index, qreal x, qreal y);
+    void movePreviewNote(int index, qreal x, qreal y, bool resizeEnd);
     void updatePlaybackPosition(qint64 position);
     void updatePlaybackTick(qint64 position = -1);
     void setMusicSource();
@@ -93,6 +94,7 @@ private:
     QSpinBox *m_subdivision = nullptr;
     QSpinBox *m_beatsPerMeasure = nullptr;
     QLineEdit *m_tick = nullptr;
+    QLineEdit *m_endTick = nullptr;
     QScrollArea *m_timelineScroll = nullptr;
     QCheckBox *m_fake = nullptr;
     QListWidget *m_noteList = nullptr;

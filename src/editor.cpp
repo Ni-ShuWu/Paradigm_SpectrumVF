@@ -81,6 +81,28 @@ QString formatPlaybackTime(qint64 milliseconds)
         .arg(seconds % 60, 2, 10, QLatin1Char('0'));
 }
 
+qreal pointToSegmentDistance(const QPointF &point, const QPointF &start, const QPointF &end)
+{
+    const QPointF segment = end - start;
+    const qreal lengthSquared = segment.x() * segment.x() + segment.y() * segment.y();
+    if (lengthSquared <= 0.0001) return QLineF(point, start).length();
+    const QPointF offset = point - start;
+    const qreal projection = qBound<qreal>(0.0,
+        (offset.x() * segment.x() + offset.y() * segment.y()) / lengthSquared, 1.0);
+    return QLineF(point, start + segment * projection).length();
+}
+
+int edgeAtChartPosition(qreal x, qreal y)
+{
+    constexpr qreal EdgeSnap = 0.45;
+    if (x > EdgeSnap && x < 12.0 - EdgeSnap && y > EdgeSnap && y < 9.0 - EdgeSnap)
+        return -1;
+    const qreal nearestVertical = qMin(x, 12.0 - x);
+    const qreal nearestHorizontal = qMin(y, 9.0 - y);
+    if (nearestVertical <= nearestHorizontal) return x < 6.0 ? 0 : 1;
+    return y > 4.5 ? 2 : 3;
+}
+
 QString noteDescription(const Note &note)
 {
     const QString category = note.type == QStringLiteral("EdgeNote") ? QStringLiteral("边线") : QStringLiteral("判面");
@@ -88,12 +110,16 @@ QString noteDescription(const Note &note)
     if (note.type == QStringLiteral("EdgeNote")) {
         static const QStringList edges{QStringLiteral("左"), QStringLiteral("右"), QStringLiteral("上"), QStringLiteral("下")};
         position = edges.value(note.edge) + QStringLiteral(" ") + QString::number(note.pos, 'g', 4);
+        if (note.isLong()) position += QStringLiteral("→%1").arg(note.endPos, 0, 'g', 4);
     } else {
         position = QStringLiteral("(%1, %2)").arg(note.x, 0, 'g', 4).arg(note.y, 0, 'g', 4);
+        if (note.isLong()) position += QStringLiteral("→(%1, %2)").arg(note.endX, 0, 'g', 4).arg(note.endY, 0, 'g', 4);
     }
-    return QStringLiteral("%1%2 · %3 · tick %4 · %5")
-        .arg(note.isFake ? QStringLiteral("◇ ") : QString(), category, note.kind)
-        .arg(note.tick).arg(position);
+    const QString timing = note.isLong()
+        ? QStringLiteral("tick %1→%2").arg(note.tick).arg(note.endTick)
+        : QStringLiteral("tick %1").arg(note.tick);
+    return QStringLiteral("%1%2 · %3 · %4 · %5")
+        .arg(note.isFake ? QStringLiteral("◇ ") : QString(), category, note.kind, timing, position);
 }
 
 bool isAllowedExtension(const QString &path, const QStringList &extensions)
@@ -144,7 +170,7 @@ public:
 
     void setInteractionHandlers(std::function<void(qreal, qreal)> placeHandler,
                                 std::function<void(int)> selectHandler,
-                                std::function<void(int, qreal, qreal)> moveHandler)
+                                std::function<void(int, qreal, qreal, bool)> moveHandler)
     {
         m_notePlacementHandler = std::move(placeHandler);
         m_noteSelectionHandler = std::move(selectHandler);
@@ -184,10 +210,11 @@ protected:
         if (hit >= 0) {
             m_selected = hit;
             if (m_noteSelectionHandler) m_noteSelectionHandler(hit);
-            if (m_notes->at(hit).type == QStringLiteral("SpaceNote")) {
-                m_dragIndex = hit;
-                setCursor(Qt::ClosedHandCursor);
-            }
+            const Note &note = m_notes->at(hit);
+            m_resizeEnd = note.isLong()
+                && QLineF(event->position(), planePoint(note.endCoordinates().x(), note.endCoordinates().y())).length() <= 22.0;
+            m_dragIndex = hit;
+            setCursor(Qt::ClosedHandCursor);
         }
         event->accept();
     }
@@ -196,7 +223,7 @@ protected:
     {
         if (m_dragIndex >= 0 && (event->buttons() & Qt::LeftButton) && !m_playing) {
             const QPointF position = chartPosition(event->position());
-            if (m_noteMoveHandler) m_noteMoveHandler(m_dragIndex, position.x(), position.y());
+            if (m_noteMoveHandler) m_noteMoveHandler(m_dragIndex, position.x(), position.y(), m_resizeEnd);
             event->accept();
             return;
         }
@@ -207,6 +234,7 @@ protected:
     {
         if (event->button() == Qt::LeftButton && m_dragIndex >= 0) {
             m_dragIndex = -1;
+            m_resizeEnd = false;
             setCursor(m_placementMode ? Qt::CrossCursor : Qt::OpenHandCursor);
             event->accept();
             return;
@@ -223,44 +251,46 @@ protected:
         const QRectF screen(0, 0, w, h);
 
         QLinearGradient atmosphere(0, 0, 0, h);
-        atmosphere.setColorAt(0.0, QColor("#b8c3b6"));
-        atmosphere.setColorAt(0.16, QColor("#39434a"));
-        atmosphere.setColorAt(0.40, QColor("#080d12"));
-        atmosphere.setColorAt(1.0, QColor("#020508"));
+        atmosphere.setColorAt(0.0, QColor("#10161a"));
+        atmosphere.setColorAt(0.28, QColor("#05080b"));
+        atmosphere.setColorAt(1.0, QColor("#000204"));
         painter.fillRect(screen, atmosphere);
         if (!m_cover.isNull()) {
             const QPixmap scaled = m_cover.scaled(size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
             const QRect source((scaled.width() - width()) / 2, (scaled.height() - height()) / 2, width(), height());
-            painter.setOpacity(0.12);
+            painter.setOpacity(0.08);
             painter.drawPixmap(rect(), scaled, source);
             painter.setOpacity(1.0);
-            painter.fillRect(screen, QColor(3, 7, 12, 190));
+            painter.fillRect(screen, QColor(0, 3, 7, 205));
         }
 
-        const QPointF horizon(w * 0.5, h * 0.25);
-        const QPolygonF leftWall{QPointF(0, h * 0.10), QPointF(w * 0.23, h * 0.21),
-                                 QPointF(w * 0.18, h * 0.88), QPointF(0, h * 0.98)};
-        const QPolygonF rightWall{QPointF(w, h * 0.10), QPointF(w * 0.77, h * 0.21),
-                                  QPointF(w * 0.82, h * 0.88), QPointF(w, h * 0.98)};
-        auto fillPolygon = [&painter](const QPolygonF &polygon, const QLinearGradient &gradient) {
-            QPainterPath path;
-            path.addPolygon(polygon);
-            painter.fillPath(path, gradient);
-        };
-        QLinearGradient leftMetal(0, h * 0.2, w * 0.22, h * 0.75);
-        leftMetal.setColorAt(0.0, QColor("#eef1eb"));
-        leftMetal.setColorAt(0.22, QColor("#65727a"));
-        leftMetal.setColorAt(0.48, QColor("#141b21"));
-        leftMetal.setColorAt(0.75, QColor("#aab5b8"));
-        leftMetal.setColorAt(1.0, QColor("#323e45"));
-        QLinearGradient rightMetal(w, h * 0.2, w * 0.78, h * 0.75);
-        rightMetal.setColorAt(0.0, QColor("#eef1eb"));
-        rightMetal.setColorAt(0.22, QColor("#65727a"));
-        rightMetal.setColorAt(0.48, QColor("#141b21"));
-        rightMetal.setColorAt(0.75, QColor("#aab5b8"));
-        rightMetal.setColorAt(1.0, QColor("#323e45"));
-        fillPolygon(leftWall, leftMetal);
-        fillPolygon(rightWall, rightMetal);
+        const QPointF horizon(w * 0.5, h * 0.34);
+        painter.setPen(QPen(QColor(230, 244, 247, 42), 1));
+        for (int scan = 0; scan < 15; ++scan) {
+            const qreal y = h * (0.12 + scan * 0.052);
+            painter.drawLine(QPointF(w * 0.055, y), QPointF(w * 0.945, y));
+        }
+        for (int ray = 0; ray <= 8; ++ray) {
+            const qreal x = w * (0.06 + ray * 0.11);
+            painter.drawLine(horizon, QPointF(x, h * 0.88));
+        }
+
+        QPainterPath shell;
+        shell.moveTo(w * 0.10, h * 0.055);
+        shell.lineTo(w * 0.90, h * 0.055);
+        shell.lineTo(w * 0.965, h * 0.13);
+        shell.lineTo(w * 0.965, h * 0.86);
+        shell.lineTo(w * 0.90, h * 0.945);
+        shell.lineTo(w * 0.10, h * 0.945);
+        shell.lineTo(w * 0.035, h * 0.86);
+        shell.lineTo(w * 0.035, h * 0.13);
+        shell.closeSubpath();
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(242, 250, 252, 220), qMax<qreal>(2.0, w * 0.006)));
+        painter.drawPath(shell);
+        painter.setPen(QPen(QColor(255, 255, 255, 70), 1));
+        painter.drawLine(QPointF(w * 0.115, h * 0.075), QPointF(w * 0.885, h * 0.075));
+        painter.drawLine(QPointF(w * 0.115, h * 0.925), QPointF(w * 0.885, h * 0.925));
 
         const QPolygonF field = judgeQuad();
         QPainterPath fieldPath;
@@ -297,47 +327,56 @@ protected:
         }
         painter.restore();
 
-        auto drawBeam = [&painter](const QPointF &from, const QPointF &to, qreal outerWidth) {
-            painter.setPen(QPen(QColor(225, 238, 239, 110), outerWidth, Qt::SolidLine, Qt::RoundCap));
+        auto drawRail = [&painter](const QPointF &from, const QPointF &to, qreal width) {
+            painter.setPen(QPen(QColor(48, 222, 255, 38), width * 3.2, Qt::SolidLine, Qt::RoundCap));
             painter.drawLine(from, to);
-            painter.setPen(QPen(QColor(255, 255, 255, 205), qMax<qreal>(1.0, outerWidth * 0.22),
+            painter.setPen(QPen(QColor(63, 220, 247, 205), width, Qt::SolidLine, Qt::RoundCap));
+            painter.drawLine(from, to);
+            painter.setPen(QPen(QColor(226, 252, 255, 210), qMax<qreal>(1.0, width * 0.22),
                                 Qt::SolidLine, Qt::RoundCap));
             painter.drawLine(from, to);
         };
-        drawBeam(QPointF(w * 0.02, h * 0.13), QPointF(w * 0.19, h * 0.88), qMax<qreal>(4.0, w * 0.014));
-        drawBeam(QPointF(w * 0.98, h * 0.13), QPointF(w * 0.81, h * 0.88), qMax<qreal>(4.0, w * 0.014));
-        painter.setPen(QPen(QColor(83, 217, 246, 210), qMax<qreal>(3.0, w * 0.009)));
-        painter.drawLine(QPointF(w * 0.035, h * 0.18), QPointF(w * 0.035, h * 0.79));
-        painter.drawLine(QPointF(w * 0.965, h * 0.18), QPointF(w * 0.965, h * 0.79));
-        painter.setPen(QPen(QColor(193, 226, 232, 185), 1.1));
-        painter.drawLine(QPointF(w * 0.19, h * 0.88), QPointF(w * 0.81, h * 0.88));
-        painter.setPen(QPen(QColor(83, 217, 246, 85), 1));
-        painter.drawLine(QPointF(w * 0.20, h * 0.90), QPointF(w * 0.80, h * 0.90));
+        drawRail(QPointF(w * 0.35, h * 0.34), QPointF(w * 0.13, h * 0.89), qMax<qreal>(3.0, w * 0.006));
+        drawRail(QPointF(w * 0.65, h * 0.34), QPointF(w * 0.87, h * 0.89), qMax<qreal>(3.0, w * 0.006));
+        painter.setPen(QPen(QColor(217, 248, 252, 185), 1.2));
+        painter.drawLine(QPointF(w * 0.13, h * 0.89), QPointF(w * 0.87, h * 0.89));
+        painter.setPen(QPen(QColor(53, 218, 249, 95), 1));
+        painter.drawLine(QPointF(w * 0.15, h * 0.91), QPointF(w * 0.85, h * 0.91));
 
-        painter.setPen(QPen(QColor(83, 217, 246, 95), 1));
-        painter.setBrush(QColor(20, 113, 145, 185));
-        painter.drawRoundedRect(QRectF(w * 0.025, h * 0.22, w * 0.025, h * 0.34), w * 0.004, w * 0.004);
-        painter.drawRoundedRect(QRectF(w * 0.95, h * 0.22, w * 0.025, h * 0.34), w * 0.004, w * 0.004);
-        painter.setPen(QPen(QColor(232, 242, 237, 180), 1));
-        painter.setBrush(Qt::NoBrush);
-        painter.drawRect(QRectF(w * 0.022, h * 0.205, w * 0.031, h * 0.37));
-        painter.drawRect(QRectF(w * 0.947, h * 0.205, w * 0.031, h * 0.37));
+        painter.setPen(QPen(QColor(55, 218, 246, 145), 1));
+        painter.setBrush(QColor(13, 92, 119, 145));
+        painter.drawRoundedRect(QRectF(w * 0.055, h * 0.27, w * 0.015, h * 0.31), w * 0.004, w * 0.004);
+        painter.drawRoundedRect(QRectF(w * 0.93, h * 0.27, w * 0.015, h * 0.31), w * 0.004, w * 0.004);
 
         if (m_notes) {
             for (int index = 0; index < m_notes->size(); ++index) {
                 const Note &note = m_notes->at(index);
                 const qreal ticksToHit = note.tick - m_playbackTick;
+                const qreal ticksToEnd = (note.isLong() ? note.endTick : note.tick) - m_playbackTick;
                 const qreal approachTicks = qMax(1, m_subdivision) * 4.0;
-                if (m_playbackTick >= 0.0 && (ticksToHit > approachTicks || ticksToHit < -0.65)) continue;
+                if (m_playbackTick >= 0.0 && (ticksToHit > approachTicks || ticksToEnd < -0.65)) continue;
                 const QPointF hitPosition = planePoint(note.coordinates().x(), note.coordinates().y());
                 const qreal progress = m_playbackTick < 0.0 ? 0.0
                     : qBound(0.0, ticksToHit / approachTicks, 1.0);
                 const QPointF position = hitPosition * (1.0 - progress) + horizon * progress;
+                const QPointF endHitPosition = planePoint(note.endCoordinates().x(), note.endCoordinates().y());
+                const qreal endProgress = m_playbackTick < 0.0 ? 0.0
+                    : qBound(0.0, (note.endTick - m_playbackTick) / approachTicks, 1.0);
+                const QPointF endPosition = endHitPosition * (1.0 - endProgress) + horizon * endProgress;
                 const qreal depth = qBound<qreal>(0.0, (position.y() - horizon.y()) / (h * 0.64), 1.0);
                 const qreal size = qMax<qreal>(4.0, w * (0.008 + depth * 0.025));
                 const QColor color = note.isFake ? QColor("#f2b65c")
                     : note.type == QStringLiteral("EdgeNote") ? QColor("#49b8ff") : QColor("#5be2f1");
                 const bool approachingHit = m_playbackTick >= 0.0 && ticksToHit <= 0.0;
+                if (note.isLong()) {
+                    painter.setPen(QPen(QColor(color.red(), color.green(), color.blue(), index == m_selected ? 220 : 130),
+                                        qMax<qreal>(3.0, size * 0.48), Qt::SolidLine, Qt::RoundCap));
+                    painter.drawLine(position, endPosition);
+                    painter.setPen(QPen(index == m_selected ? QColor("#ffffff") : color,
+                                        qMax<qreal>(1.3, size * 0.12)));
+                    painter.setBrush(QColor(color.red(), color.green(), color.blue(), 210));
+                    painter.drawEllipse(endPosition, size * 0.45, size * 0.45);
+                }
                 painter.setPen(QPen(approachingHit || index == m_selected ? QColor("#ffffff") : color,
                                     qMax<qreal>(1.3, size * 0.13), note.isFake ? Qt::DashLine : Qt::SolidLine));
                 painter.setBrush(QColor(color.red(), color.green(), color.blue(),
@@ -351,28 +390,25 @@ protected:
             }
         }
 
-        QLinearGradient header(0, h * 0.03, 0, h * 0.15);
-        header.setColorAt(0.0, QColor(238, 242, 235, 218));
-        header.setColorAt(0.42, QColor(116, 130, 131, 202));
-        header.setColorAt(1.0, QColor(24, 31, 35, 230));
-        painter.fillRect(QRectF(w * 0.13, h * 0.035, w * 0.74, h * 0.105), header);
-        painter.setPen(QPen(QColor(255, 255, 255, 190), 1));
-        painter.drawLine(QPointF(w * 0.13, h * 0.142), QPointF(w * 0.87, h * 0.142));
-        painter.setPen(QColor("#101820"));
-        const QFont titleFont(QStringLiteral("Microsoft YaHei UI"), qMax(9, qRound(h * 0.031)), QFont::Bold);
+        painter.setPen(QPen(QColor(79, 219, 245, 90), 1));
+        painter.setBrush(QColor(2, 9, 14, 190));
+        painter.drawRoundedRect(QRectF(w * 0.15, h * 0.075, w * 0.70, h * 0.075), h * 0.012, h * 0.012);
+        painter.setPen(QColor(226, 244, 247, 225));
+        const QFont titleFont(QStringLiteral("Microsoft YaHei UI"), qMax(9, qRound(h * 0.028)), QFont::DemiBold);
         painter.setFont(titleFont);
         const QFontMetrics titleMetrics(titleFont);
         const QString displayTitle = titleMetrics.elidedText(m_chartTitle, Qt::ElideRight,
                                                                qRound(w * 0.34));
-        painter.drawText(QRectF(w * 0.155, h * 0.065, w * 0.36, h * 0.055),
+        painter.drawText(QRectF(w * 0.17, h * 0.085, w * 0.34, h * 0.05),
                          Qt::AlignLeft | Qt::AlignVCenter, displayTitle);
-        const QFont timingFont(QStringLiteral("Consolas"), qMax(8, qRound(h * 0.023)), QFont::DemiBold);
+        const QFont timingFont(QStringLiteral("Consolas"), qMax(8, qRound(h * 0.021)), QFont::DemiBold);
         painter.setFont(timingFont);
-        const QString timing = QStringLiteral("BPM %1  /  %2 DIV × %3 BEATS")
+        painter.setPen(QColor(92, 220, 244, 220));
+        const QString timing = QStringLiteral("BPM %1  ·  %2 DIV  ·  %3 BEATS")
                                    .arg(m_bpm).arg(m_subdivision).arg(m_beatsPerMeasure);
-        painter.drawText(QRectF(w * 0.52, h * 0.065, w * 0.33, h * 0.055),
+        painter.drawText(QRectF(w * 0.51, h * 0.085, w * 0.32, h * 0.05),
                          Qt::AlignRight | Qt::AlignVCenter,
-                         QFontMetrics(timingFont).elidedText(timing, Qt::ElideLeft, qRound(w * 0.33)));
+                         QFontMetrics(timingFont).elidedText(timing, Qt::ElideLeft, qRound(w * 0.32)));
 
         painter.setPen(QColor(238, 246, 247, 225));
         painter.setFont(QFont(QStringLiteral("Consolas"), qMax(8, qRound(h * 0.025)), QFont::Bold));
@@ -393,10 +429,10 @@ protected:
 private:
     QPolygonF judgeQuad() const
     {
-        return QPolygonF{QPointF(width() * 0.37, height() * 0.25),
-                         QPointF(width() * 0.63, height() * 0.25),
-                         QPointF(width() * 0.81, height() * 0.88),
-                         QPointF(width() * 0.19, height() * 0.88)};
+        return QPolygonF{QPointF(width() * 0.35, height() * 0.34),
+                         QPointF(width() * 0.65, height() * 0.34),
+                         QPointF(width() * 0.87, height() * 0.89),
+                         QPointF(width() * 0.13, height() * 0.89)};
     }
 
     QPainterPath judgePath() const
@@ -434,9 +470,13 @@ private:
         int closest = -1;
         qreal closestDistance = 18.0;
         for (int index = 0; index < m_notes->size(); ++index) {
-            const QPointF notePosition = planePoint(m_notes->at(index).coordinates().x(),
-                                                    m_notes->at(index).coordinates().y());
-            const qreal distance = QLineF(position, notePosition).length();
+            const Note &note = m_notes->at(index);
+            const QPointF notePosition = planePoint(note.coordinates().x(), note.coordinates().y());
+            qreal distance = QLineF(position, notePosition).length();
+            if (note.isLong()) {
+                const QPointF endPosition = planePoint(note.endCoordinates().x(), note.endCoordinates().y());
+                distance = pointToSegmentDistance(position, notePosition, endPosition);
+            }
             if (distance < closestDistance) {
                 closestDistance = distance;
                 closest = index;
@@ -449,6 +489,7 @@ private:
     const QVector<Note> *m_notes = nullptr;
     int m_selected = -1;
     int m_dragIndex = -1;
+    bool m_resizeEnd = false;
     int m_bpm = 120;
     int m_subdivision = 4;
     int m_beatsPerMeasure = 4;
@@ -458,7 +499,7 @@ private:
     bool m_placementMode = false;
     std::function<void(qreal, qreal)> m_notePlacementHandler;
     std::function<void(int)> m_noteSelectionHandler;
-    std::function<void(int, qreal, qreal)> m_noteMoveHandler;
+    std::function<void(int, qreal, qreal, bool)> m_noteMoveHandler;
 };
 
 JudgePlane::JudgePlane(QWidget *parent) : QWidget(parent)
@@ -518,7 +559,7 @@ int JudgePlane::contentHeight() const
     int lastTick = MinimumTicks - 1;
     if (m_notes) {
         for (const Note &note : *m_notes)
-            lastTick = qMax(lastTick, note.tick);
+            lastTick = qMax(lastTick, note.isLong() ? note.endTick : note.tick);
     }
     return HeaderHeight + (lastTick + 2) * TickHeight;
 }
@@ -526,14 +567,23 @@ int JudgePlane::contentHeight() const
 int JudgePlane::nearestNote(const QPointF &point) const
 {
     if (!m_notes || !gridRect().contains(point)) return -1;
-    const int targetTick = tickAt(point.y());
     const int targetLane = laneAt(point.x());
+    int closest = -1;
+    qreal closestDistance = 14.0;
     for (int i = m_notes->size() - 1; i >= 0; --i) {
         const Note &note = m_notes->at(i);
         const int lane = note.type == QStringLiteral("EdgeNote") ? note.edge : 4;
-        if (note.tick == targetTick && lane == targetLane) return i;
+        if (lane != targetLane) continue;
+        const qreal startY = HeaderHeight + (note.tick + 0.5) * TickHeight;
+        const qreal endY = HeaderHeight + ((note.isLong() ? note.endTick : note.tick) + 0.5) * TickHeight;
+        const qreal distance = point.y() < startY ? startY - point.y()
+            : (point.y() > endY ? point.y() - endY : 0.0);
+        if (distance < closestDistance) {
+            closestDistance = distance;
+            closest = i;
+        }
     }
-    return -1;
+    return closest;
 }
 
 void JudgePlane::paintEvent(QPaintEvent *)
@@ -544,8 +594,8 @@ void JudgePlane::paintEvent(QPaintEvent *)
     const QRectF plane = gridRect();
     QFont utility(QStringLiteral("Consolas"), 9);
     painter.setFont(utility);
-    const QStringList lanes{QStringLiteral("0"), QStringLiteral("1"), QStringLiteral("2"),
-                            QStringLiteral("3"), QStringLiteral("判定区")};
+    const QStringList lanes{QStringLiteral("左边线"), QStringLiteral("右边线"), QStringLiteral("上边线"),
+                            QStringLiteral("下边线"), QStringLiteral("判面 12×9")};
     const double laneSize = laneWidth();
     painter.fillRect(QRectF(0, 0, width(), HeaderHeight), Panel);
     for (int lane = 0; lane < LaneCount; ++lane) {
@@ -576,14 +626,22 @@ void JudgePlane::paintEvent(QPaintEvent *)
         const Note &note = m_notes->at(i);
         if (note.tick < 0) continue;
         const int lane = note.type == QStringLiteral("EdgeNote") ? note.edge : 4;
-        const QRectF cell(lane * laneSize + 4, HeaderHeight + note.tick * TickHeight + 3, laneSize - 8, TickHeight - 6);
+        const qreal startY = HeaderHeight + note.tick * TickHeight + 3;
+        const qreal endY = HeaderHeight + (note.isLong() ? note.endTick : note.tick) * TickHeight + TickHeight - 3;
+        const QRectF cell(lane * laneSize + 5, startY, laneSize - 10, qMax<qreal>(TickHeight - 6, endY - startY));
         const QColor color = lane == 4 ? Cyan : Mint;
         painter.setPen(QPen(note.isFake ? Amber : (i == m_selected ? Text : color), i == m_selected ? 2 : 1,
                             note.isFake ? Qt::DashLine : Qt::SolidLine));
         painter.setBrush(note.isFake ? Qt::NoBrush : QColor(color.red(), color.green(), color.blue(), 130));
         painter.drawRoundedRect(cell, 5, 5);
+        if (note.isLong()) {
+            painter.setBrush(i == m_selected ? Text : color);
+            painter.drawRoundedRect(QRectF(cell.left() + 4, cell.bottom() - 5, cell.width() - 8, 5), 2, 2);
+        }
         painter.setPen(note.isFake ? Amber : Text);
-        painter.drawText(cell, Qt::AlignCenter, QStringLiteral("%1 · %2").arg(note.kind).arg(note.tick));
+        painter.drawText(cell.adjusted(2, 2, -2, -2), Qt::AlignTop | Qt::AlignHCenter,
+                         note.isLong() ? QStringLiteral("%1 · %2→%3").arg(note.kind).arg(note.tick).arg(note.endTick)
+                                       : QStringLiteral("%1 · %2").arg(note.kind).arg(note.tick));
     }
 }
 
@@ -593,6 +651,12 @@ void JudgePlane::mousePressEvent(QMouseEvent *event)
     const QPointF point = event->position();
     if (m_tool == QStringLiteral("select")) {
         m_dragIndex = nearestNote(point);
+        m_resizeEnd = false;
+        if (m_dragIndex >= 0 && m_notes) {
+            const Note &note = m_notes->at(m_dragIndex);
+            const qreal endY = HeaderHeight + ((note.isLong() ? note.endTick : note.tick) + 0.5) * TickHeight;
+            m_resizeEnd = note.isLong() && qAbs(point.y() - endY) <= TickHeight * 0.65;
+        }
         emit noteSelected(m_dragIndex);
     } else {
         emit notePlaced(tickAt(point.y()), laneAt(point.x()));
@@ -604,12 +668,15 @@ void JudgePlane::mouseMoveEvent(QMouseEvent *event)
     if (m_dragIndex < 0 || !(event->buttons() & Qt::LeftButton)) return;
     const QRectF plane = gridRect();
     if (event->position().y() < plane.top() || event->position().y() >= plane.bottom()) return;
-    emit noteMoved(m_dragIndex, tickAt(event->position().y()), laneAt(event->position().x()));
+    emit noteMoved(m_dragIndex, tickAt(event->position().y()), laneAt(event->position().x()), m_resizeEnd);
 }
 
 void JudgePlane::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::LeftButton) m_dragIndex = -1;
+    if (event->button() == Qt::LeftButton) {
+        m_dragIndex = -1;
+        m_resizeEnd = false;
+    }
 }
 
 EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
@@ -713,10 +780,12 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
     m_edgeBox = new QComboBox(side);
     m_edgeBox->addItems({QStringLiteral("0 · 左边线"), QStringLiteral("1 · 右边线"), QStringLiteral("2 · 上边线"), QStringLiteral("3 · 下边线")});
     m_tick = new QLineEdit(QStringLiteral("0"), side);
+    m_endTick = new QLineEdit(QStringLiteral("0"), side);
     m_fake = new QCheckBox(QStringLiteral("假音符"), side);
     props->addRow(QStringLiteral("音符种类"), m_kind);
-    props->addRow(QStringLiteral("边线轨道"), m_edgeBox);
-    props->addRow(QStringLiteral("Tick"), m_tick);
+    props->addRow(QStringLiteral("边线区域"), m_edgeBox);
+    props->addRow(QStringLiteral("起始 Tick"), m_tick);
+    props->addRow(QStringLiteral("结束 Tick"), m_endTick);
     props->addRow(QString(), m_fake);
     sideLayout->addLayout(props);
     auto *apply = button(QStringLiteral("应用到选中音符"), side, true);
@@ -806,7 +875,7 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
             placePreviewNote(tick, x, y);
         },
         [this](int index) { selectNote(index); },
-        [this](int index, qreal x, qreal y) { movePreviewNote(index, x, y); });
+        [this](int index, qreal x, qreal y, bool resizeEnd) { movePreviewNote(index, x, y, resizeEnd); });
     m_coverPreview->setPlacementMode(false);
     m_mediaPlayer = new QMediaPlayer(this);
     m_audioOutput = new QAudioOutput(this);
@@ -856,18 +925,32 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
     });
     connect(m_plane, &JudgePlane::notePlaced, this, &EditorWindow::placeNote);
     connect(m_plane, &JudgePlane::noteSelected, this, &EditorWindow::selectNote);
-    connect(m_plane, &JudgePlane::noteMoved, this, [this](int index, int tick, int lane) {
+    connect(m_plane, &JudgePlane::noteMoved, this, [this](int index, int tick, int lane, bool resizeEnd) {
         if (index < 0 || index >= m_chart.notes.size()) return;
         Note &note = m_chart.notes[index];
-        note.tick = tick;
-        if (lane < 4) {
-            note.type = QStringLiteral("EdgeNote");
-            note.edge = lane;
-            note.pos = lane < 2 ? 4.5 : 6.0;
+        if (resizeEnd && note.isLong()) {
+            note.endTick = qMax(note.tick, tick);
         } else {
-            note.type = QStringLiteral("SpaceNote");
-            note.x = 6.0;
-            note.y = 4.5;
+            const int duration = note.isLong() ? note.endTick - note.tick : 0;
+            note.tick = tick;
+            note.endTick = tick + duration;
+            if (lane < 4 && note.type == QStringLiteral("SpaceNote")) {
+                note.type = QStringLiteral("EdgeNote");
+                note.edge = lane;
+                note.pos = lane < 2 ? qBound(0.0, note.y, 9.0) : qBound(0.0, note.x, 12.0);
+                note.endPos = lane < 2 ? qBound(0.0, note.endY, 9.0) : qBound(0.0, note.endX, 12.0);
+            } else if (lane == 4 && note.type == QStringLiteral("EdgeNote")) {
+                const QPointF start = note.coordinates();
+                const QPointF end = note.endCoordinates();
+                note.type = QStringLiteral("SpaceNote");
+                note.x = start.x(); note.y = start.y();
+                note.endX = end.x(); note.endY = end.y();
+            } else if (lane < 4) {
+                note.edge = lane;
+                const qreal limit = lane < 2 ? 9.0 : 12.0;
+                note.pos = qBound(0.0, note.pos, limit);
+                note.endPos = qBound(0.0, note.endPos, limit);
+            }
         }
         markDirty(); refresh();
     });
@@ -1075,15 +1158,27 @@ bool EditorWindow::saveChartFile()
 void EditorWindow::placePreviewNote(int tick, qreal x, qreal y)
 {
     Note note;
-    note.type = QStringLiteral("SpaceNote");
     note.kind = m_kind->currentText();
     note.tick = tick;
+    note.endTick = note.isLong() ? tick + qMax(1, m_chart.subdivision) : tick;
     note.isFake = m_fake->isChecked();
-    note.x = qBound(0.0, x, 12.0);
-    note.y = qBound(0.0, y, 9.0);
+    const int edge = edgeAtChartPosition(x, y);
+    if (edge >= 0) {
+        note.type = QStringLiteral("EdgeNote");
+        note.edge = edge;
+        note.pos = edge < 2 ? qBound(0.0, y, 9.0) : qBound(0.0, x, 12.0);
+        note.endPos = note.pos;
+    } else {
+        note.type = QStringLiteral("SpaceNote");
+        note.x = qBound(0.0, x, 12.0);
+        note.y = qBound(0.0, y, 9.0);
+        note.endX = note.x;
+        note.endY = note.y;
+    }
     m_chart.notes.append(note);
     m_selected = m_chart.notes.size() - 1;
     m_tick->setText(QString::number(tick));
+    m_endTick->setText(QString::number(note.endTick));
     m_tool = QStringLiteral("select");
     m_plane->setTool(m_tool, m_edge);
     markDirty();
@@ -1091,16 +1186,38 @@ void EditorWindow::placePreviewNote(int tick, qreal x, qreal y)
     selectNote(m_selected);
 }
 
-void EditorWindow::movePreviewNote(int index, qreal x, qreal y)
+void EditorWindow::movePreviewNote(int index, qreal x, qreal y, bool resizeEnd)
 {
     if (index < 0 || index >= m_chart.notes.size()) return;
     Note &note = m_chart.notes[index];
-    if (note.type != QStringLiteral("SpaceNote")) return;
     const qreal nextX = qBound(0.0, x, 12.0);
     const qreal nextY = qBound(0.0, y, 9.0);
-    if (qAbs(note.x - nextX) < 0.001 && qAbs(note.y - nextY) < 0.001) return;
-    note.x = nextX;
-    note.y = nextY;
+    const int targetEdge = edgeAtChartPosition(nextX, nextY);
+    if (!resizeEnd && targetEdge >= 0) {
+        const QPointF oldStart = note.coordinates();
+        const QPointF oldEnd = note.endCoordinates();
+        const QPointF delta(nextX - oldStart.x(), nextY - oldStart.y());
+        note.type = QStringLiteral("EdgeNote");
+        note.edge = targetEdge;
+        note.pos = targetEdge < 2 ? nextY : nextX;
+        const QPointF movedEnd = oldEnd + delta;
+        note.endPos = targetEdge < 2 ? qBound(0.0, movedEnd.y(), 9.0)
+                                     : qBound(0.0, movedEnd.x(), 12.0);
+    } else if (!resizeEnd && targetEdge < 0) {
+        const QPointF oldStart = note.coordinates();
+        const QPointF oldEnd = note.endCoordinates();
+        const QPointF delta(nextX - oldStart.x(), nextY - oldStart.y());
+        note.type = QStringLiteral("SpaceNote");
+        note.x = nextX;
+        note.y = nextY;
+        note.endX = qBound(0.0, oldEnd.x() + delta.x(), 12.0);
+        note.endY = qBound(0.0, oldEnd.y() + delta.y(), 9.0);
+    } else if (note.type == QStringLiteral("EdgeNote")) {
+        note.endPos = note.edge < 2 ? nextY : nextX;
+    } else {
+        note.endX = nextX;
+        note.endY = nextY;
+    }
     m_selected = index;
     m_plane->setNotes(&m_chart.notes, m_selected);
     m_noteList->item(index)->setText(noteDescription(note));
@@ -1113,19 +1230,24 @@ void EditorWindow::placeNote(int tick, int lane)
     Note note;
     note.kind = m_kind->currentText();
     note.tick = tick;
+    note.endTick = note.isLong() ? tick + qMax(1, m_chart.subdivision) : tick;
     note.isFake = m_fake->isChecked();
     if (lane < 4) {
         note.type = QStringLiteral("EdgeNote");
         note.edge = lane;
         note.pos = lane < 2 ? 4.5 : 6.0;
+        note.endPos = note.pos;
     } else {
         note.type = QStringLiteral("SpaceNote");
         note.x = 6.0;
         note.y = 4.5;
+        note.endX = note.x;
+        note.endY = note.y;
     }
     m_chart.notes.append(note);
     m_selected = m_chart.notes.size() - 1;
     m_tick->setText(QString::number(tick));
+    m_endTick->setText(QString::number(note.endTick));
     markDirty();
     refresh();
     selectNote(m_selected);
@@ -1151,6 +1273,7 @@ void EditorWindow::selectNote(int index)
         const int kindIndex = m_kind->findText(note.kind);
         if (kindIndex >= 0) m_kind->setCurrentIndex(kindIndex);
         m_tick->setText(QString::number(note.tick));
+        m_endTick->setText(QString::number(note.isLong() ? note.endTick : note.tick));
         m_fake->setChecked(note.isFake);
         if (note.type == QStringLiteral("EdgeNote")) m_edgeBox->setCurrentIndex(note.edge);
     }
@@ -1160,14 +1283,36 @@ void EditorWindow::selectNote(int index)
 void EditorWindow::applyProperties()
 {
     if (m_selected < 0 || m_selected >= m_chart.notes.size()) { updateStatus(QStringLiteral("请先选择一个音符")); return; }
-    bool ok = false;
-    const int tick = m_tick->text().toInt(&ok);
-    if (!ok) { QMessageBox::warning(this, QStringLiteral("属性无效"), QStringLiteral("tick 必须为整数。")); return; }
+    bool tickOk = false;
+    bool endTickOk = false;
+    const int tick = m_tick->text().toInt(&tickOk);
+    const int endTick = m_endTick->text().toInt(&endTickOk);
+    const QString kind = m_kind->currentText();
+    const bool isLong = kind == QStringLiteral("link") || kind == QStringLiteral("slider");
+    if (!tickOk || tick < 0 || (isLong && (!endTickOk || endTick < tick))) {
+        QMessageBox::warning(this, QStringLiteral("属性无效"),
+                             QStringLiteral("Tick 必须为非负整数，且长条结束 Tick 不得早于起始 Tick。"));
+        return;
+    }
     Note &note = m_chart.notes[m_selected];
-    note.kind = m_kind->currentText(); note.tick = tick; note.isFake = m_fake->isChecked();
+    const bool wasLong = note.isLong();
+    note.kind = kind;
+    note.tick = tick;
+    note.endTick = isLong ? (wasLong ? endTick : qMax(endTick, tick + qMax(1, m_chart.subdivision))) : tick;
+    note.isFake = m_fake->isChecked();
     if (note.type == QStringLiteral("EdgeNote")) {
+        const QPointF oldStart = note.coordinates();
+        const QPointF oldEnd = note.endCoordinates();
         note.edge = m_edgeBox->currentIndex();
-        note.pos = note.edge < 2 ? 4.5 : 6.0;
+        note.pos = note.edge < 2 ? oldStart.y() : oldStart.x();
+        note.endPos = note.edge < 2 ? oldEnd.y() : oldEnd.x();
+        const qreal limit = note.edge < 2 ? 9.0 : 12.0;
+        note.pos = qBound(0.0, note.pos, limit);
+        note.endPos = qBound(0.0, note.endPos, limit);
+    }
+    if (isLong && note.endCoordinates().isNull() && !note.coordinates().isNull()) {
+        if (note.type == QStringLiteral("EdgeNote")) note.endPos = note.pos;
+        else { note.endX = note.x; note.endY = note.y; }
     }
     markDirty(); refresh();
 }
@@ -1183,6 +1328,7 @@ void EditorWindow::duplicateSelected()
     if (m_selected < 0 || m_selected >= m_chart.notes.size()) return;
     Note note = m_chart.notes.at(m_selected);
     ++note.tick;
+    if (note.isLong()) ++note.endTick;
     m_chart.notes.append(note); m_selected = m_chart.notes.size() - 1; markDirty(); refresh();
 }
 
