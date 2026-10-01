@@ -6,6 +6,7 @@
 #include <QWidget>
 #include <QMediaPlayer>
 
+class QAudioOutput;
 class QComboBox;
 class PerspectivePreview;
 class QLineEdit;

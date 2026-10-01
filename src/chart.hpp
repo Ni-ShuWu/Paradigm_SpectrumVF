@@ -6,6 +6,9 @@
 #include <QVector>
 #include <optional>
 
+inline constexpr int ChartGridWidth = 12;
+inline constexpr int ChartGridHeight = 9;
+
 struct Note {
     QString type;
     QString kind = QStringLiteral("tap");

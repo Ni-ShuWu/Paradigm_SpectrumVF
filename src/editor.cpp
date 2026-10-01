@@ -95,12 +95,14 @@ qreal pointToSegmentDistance(const QPointF &point, const QPointF &start, const Q
 int edgeAtChartPosition(qreal x, qreal y)
 {
     constexpr qreal EdgeSnap = 0.45;
-    if (x > EdgeSnap && x < 12.0 - EdgeSnap && y > EdgeSnap && y < 9.0 - EdgeSnap)
+    constexpr qreal GridW = ChartGridWidth;
+    constexpr qreal GridH = ChartGridHeight;
+    if (x > EdgeSnap && x < GridW - EdgeSnap && y > EdgeSnap && y < GridH - EdgeSnap)
         return -1;
-    const qreal nearestVertical = qMin(x, 12.0 - x);
-    const qreal nearestHorizontal = qMin(y, 9.0 - y);
-    if (nearestVertical <= nearestHorizontal) return x < 6.0 ? 0 : 1;
-    return y > 4.5 ? 2 : 3;
+    const qreal nearestVertical = qMin(x, GridW - x);
+    const qreal nearestHorizontal = qMin(y, GridH - y);
+    if (nearestVertical <= nearestHorizontal) return x < GridW / 2.0 ? 0 : 1;
+    return y > GridH / 2.0 ? 2 : 3;
 }
 
 QString noteDescription(const Note &note)
@@ -361,12 +363,12 @@ protected:
 
         const QRectF judge = judgeRect();
         painter.setPen(QPen(QColor(86, 226, 242, 42), 1));
-        for (int column = 1; column < 12; ++column) {
-            const qreal x = judge.left() + judge.width() * column / 12.0;
+        for (int column = 1; column < ChartGridWidth; ++column) {
+            const qreal x = judge.left() + judge.width() * column / qreal(ChartGridWidth);
             painter.drawLine(QPointF(x, judge.top()), QPointF(x, judge.bottom()));
         }
-        for (int row = 1; row < 9; ++row) {
-            const qreal y = judge.top() + judge.height() * row / 9.0;
+        for (int row = 1; row < ChartGridHeight; ++row) {
+            const qreal y = judge.top() + judge.height() * row / qreal(ChartGridHeight);
             painter.drawLine(QPointF(judge.left(), y), QPointF(judge.right(), y));
         }
         painter.setBrush(Qt::NoBrush);
@@ -474,15 +476,15 @@ private:
     QPointF planePoint(qreal x, qreal y) const
     {
         const QRectF plane = judgeRect();
-        return QPointF(plane.left() + qBound(0.0, x / 12.0, 1.0) * plane.width(),
-                       plane.bottom() - qBound(0.0, y / 9.0, 1.0) * plane.height());
+        return QPointF(plane.left() + qBound(0.0, x / qreal(ChartGridWidth), 1.0) * plane.width(),
+                       plane.bottom() - qBound(0.0, y / qreal(ChartGridHeight), 1.0) * plane.height());
     }
 
     QPointF chartPosition(const QPointF &point) const
     {
         const QRectF plane = judgeRect();
-        const qreal x = qBound(0.0, (point.x() - plane.left()) / plane.width(), 1.0) * 12.0;
-        const qreal y = (1.0 - qBound(0.0, (point.y() - plane.top()) / plane.height(), 1.0)) * 9.0;
+        const qreal x = qBound(0.0, (point.x() - plane.left()) / plane.width(), 1.0) * ChartGridWidth;
+        const qreal y = (1.0 - qBound(0.0, (point.y() - plane.top()) / plane.height(), 1.0)) * ChartGridHeight;
         return QPointF(x, y);
     }
 
@@ -617,7 +619,8 @@ void JudgePlane::paintEvent(QPaintEvent *)
     QFont utility(QStringLiteral("Consolas"), 9);
     painter.setFont(utility);
     const QStringList lanes{QStringLiteral("左边线"), QStringLiteral("右边线"), QStringLiteral("上边线"),
-                            QStringLiteral("下边线"), QStringLiteral("判面 12×9")};
+                            QStringLiteral("下边线"),
+                            QStringLiteral("判面 %1×%2").arg(ChartGridWidth).arg(ChartGridHeight)};
     const double laneSize = laneWidth();
     painter.fillRect(QRectF(0, 0, width(), HeaderHeight), Panel);
     for (int lane = 0; lane < LaneCount; ++lane) {
@@ -830,7 +833,8 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
     preview->setStyleSheet("background:#191a1c");
     auto *previewLayout = new QVBoxLayout(preview);
     previewLayout->setContentsMargins(14, 10, 14, 10);
-    previewLayout->addWidget(new QLabel(QStringLiteral("3D 风格谱面预览 · 判定场 12×9"), preview));
+    previewLayout->addWidget(new QLabel(QStringLiteral("3D 风格谱面预览 · 判定场 %1×%2")
+                                            .arg(ChartGridWidth).arg(ChartGridHeight), preview));
     m_coverPreview = new PerspectivePreview(preview);
     previewLayout->addWidget(m_coverPreview, 0, Qt::AlignTop);
     auto *playback = new QHBoxLayout;
@@ -959,8 +963,8 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
             if (lane < 4 && note.type == QStringLiteral("SpaceNote")) {
                 note.type = QStringLiteral("EdgeNote");
                 note.edge = lane;
-                note.pos = lane < 2 ? qBound(0.0, note.y, 9.0) : qBound(0.0, note.x, 12.0);
-                note.endPos = lane < 2 ? qBound(0.0, note.endY, 9.0) : qBound(0.0, note.endX, 12.0);
+                note.pos = lane < 2 ? qBound<qreal>(0.0, note.y, ChartGridHeight) : qBound<qreal>(0.0, note.x, ChartGridWidth);
+                note.endPos = lane < 2 ? qBound<qreal>(0.0, note.endY, ChartGridHeight) : qBound<qreal>(0.0, note.endX, ChartGridWidth);
             } else if (lane == 4 && note.type == QStringLiteral("EdgeNote")) {
                 const QPointF start = note.coordinates();
                 const QPointF end = note.endCoordinates();
@@ -969,7 +973,7 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
                 note.endX = end.x(); note.endY = end.y();
             } else if (lane < 4) {
                 note.edge = lane;
-                const qreal limit = lane < 2 ? 9.0 : 12.0;
+                const qreal limit = lane < 2 ? ChartGridHeight : ChartGridWidth;
                 note.pos = qBound(0.0, note.pos, limit);
                 note.endPos = qBound(0.0, note.endPos, limit);
             }
@@ -980,10 +984,7 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
     connect(apply, &QPushButton::clicked, this, &EditorWindow::applyProperties);
     connect(remove, &QPushButton::clicked, this, &EditorWindow::deleteSelected);
     connect(duplicate, &QPushButton::clicked, this, &EditorWindow::duplicateSelected);
-    new QShortcut(QKeySequence::Save, this, [this] { saveChartFile(); });
     new QShortcut(QKeySequence::Open, this, [this] { openChart(); });
-    new QShortcut(QKeySequence(Qt::Key_Delete), this, [this] { deleteSelected(); });
-    new QShortcut(QKeySequence(QStringLiteral("Ctrl+D")), this, [this] { duplicateSelected(); });
     refresh();
     updateStatus();
 }
@@ -994,7 +995,6 @@ void EditorWindow::updateStatus(const QString &message)
         ? QStringLiteral("%1　·　BPM %2　·　每拍 %3 分音　·　每小节 %4 拍　·　%5 个音符%6")
               .arg(m_dirty ? QStringLiteral("未保存") : QStringLiteral("就绪"))
               .arg(m_chart.bpm).arg(m_chart.subdivision).arg(m_chart.beatsPerMeasure).arg(m_chart.notes.size())
-              .arg(m_chartPath.isEmpty() ? QString() : QStringLiteral("　·　") + QFileInfo(m_chartPath).fileName())
               .arg(m_chartPath.isEmpty() ? QString() : QStringLiteral("　·　") + QFileInfo(m_chartPath).fileName())
         : message);
     statusBar()->showMessage(message.isEmpty()
@@ -1035,7 +1035,6 @@ void EditorWindow::refreshPreview()
                              m_chart.subdivision, m_chart.beatsPerMeasure,
                              m_mediaPlayer && m_mediaPlayer->source().isEmpty() ? -1.0 : playbackTick,
                              playing, placementMode, m_chart.title);
-    setMusicSource();
     const auto labels = findChildren<QLabel *>();
     for (QLabel *label : labels) {
         if (label->objectName() == QStringLiteral("musicPathLabel"))
@@ -1128,6 +1127,7 @@ void EditorWindow::newBundle()
     m_beatsPerMeasure->setValue(m_chart.beatsPerMeasure);
     m_dirty = false;
     refresh();
+    setMusicSource();
     updateStatus(QStringLiteral("曲包已创建　·　%1").arg(destination));
 }
 
@@ -1156,6 +1156,7 @@ void EditorWindow::openChart()
     m_beatsPerMeasure->setValue(m_chart.beatsPerMeasure);
     m_dirty = false;
     refresh();
+    setMusicSource();
     updateStatus();
 }
 
@@ -1173,6 +1174,7 @@ bool EditorWindow::saveChartFile()
         return false;
     }
     m_dirty = false;
+    setMusicSource();
     updateStatus();
     return true;
 }
@@ -1188,12 +1190,12 @@ void EditorWindow::placePreviewNote(int tick, qreal x, qreal y)
     if (edge >= 0) {
         note.type = QStringLiteral("EdgeNote");
         note.edge = edge;
-        note.pos = edge < 2 ? qBound(0.0, y, 9.0) : qBound(0.0, x, 12.0);
+        note.pos = edge < 2 ? qBound<qreal>(0.0, y, ChartGridHeight) : qBound<qreal>(0.0, x, ChartGridWidth);
         note.endPos = note.pos;
     } else {
         note.type = QStringLiteral("SpaceNote");
-        note.x = qBound(0.0, x, 12.0);
-        note.y = qBound(0.0, y, 9.0);
+        note.x = qBound<qreal>(0.0, x, ChartGridWidth);
+        note.y = qBound<qreal>(0.0, y, ChartGridHeight);
         note.endX = note.x;
         note.endY = note.y;
     }
@@ -1212,8 +1214,8 @@ void EditorWindow::movePreviewNote(int index, qreal x, qreal y, bool resizeEnd)
 {
     if (index < 0 || index >= m_chart.notes.size()) return;
     Note &note = m_chart.notes[index];
-    const qreal nextX = qBound(0.0, x, 12.0);
-    const qreal nextY = qBound(0.0, y, 9.0);
+    const qreal nextX = qBound<qreal>(0.0, x, ChartGridWidth);
+    const qreal nextY = qBound<qreal>(0.0, y, ChartGridHeight);
     const int targetEdge = edgeAtChartPosition(nextX, nextY);
     if (!resizeEnd && targetEdge >= 0) {
         const QPointF oldStart = note.coordinates();
@@ -1223,8 +1225,8 @@ void EditorWindow::movePreviewNote(int index, qreal x, qreal y, bool resizeEnd)
         note.edge = targetEdge;
         note.pos = targetEdge < 2 ? nextY : nextX;
         const QPointF movedEnd = oldEnd + delta;
-        note.endPos = targetEdge < 2 ? qBound(0.0, movedEnd.y(), 9.0)
-                                     : qBound(0.0, movedEnd.x(), 12.0);
+        note.endPos = targetEdge < 2 ? qBound<qreal>(0.0, movedEnd.y(), ChartGridHeight)
+                                     : qBound<qreal>(0.0, movedEnd.x(), ChartGridWidth);
     } else if (!resizeEnd && targetEdge < 0) {
         const QPointF oldStart = note.coordinates();
         const QPointF oldEnd = note.endCoordinates();
@@ -1232,8 +1234,8 @@ void EditorWindow::movePreviewNote(int index, qreal x, qreal y, bool resizeEnd)
         note.type = QStringLiteral("SpaceNote");
         note.x = nextX;
         note.y = nextY;
-        note.endX = qBound(0.0, oldEnd.x() + delta.x(), 12.0);
-        note.endY = qBound(0.0, oldEnd.y() + delta.y(), 9.0);
+        note.endX = qBound<qreal>(0.0, oldEnd.x() + delta.x(), ChartGridWidth);
+        note.endY = qBound<qreal>(0.0, oldEnd.y() + delta.y(), ChartGridHeight);
     } else if (note.type == QStringLiteral("EdgeNote")) {
         note.endPos = note.edge < 2 ? nextY : nextX;
     } else {
@@ -1257,12 +1259,12 @@ void EditorWindow::placeNote(int tick, int lane)
     if (lane < 4) {
         note.type = QStringLiteral("EdgeNote");
         note.edge = lane;
-        note.pos = lane < 2 ? 4.5 : 6.0;
+        note.pos = lane < 2 ? ChartGridHeight / 2.0 : ChartGridWidth / 2.0;
         note.endPos = note.pos;
     } else {
         note.type = QStringLiteral("SpaceNote");
-        note.x = 6.0;
-        note.y = 4.5;
+        note.x = ChartGridWidth / 2.0;
+        note.y = ChartGridHeight / 2.0;
         note.endX = note.x;
         note.endY = note.y;
     }
@@ -1317,10 +1319,9 @@ void EditorWindow::applyProperties()
         return;
     }
     Note &note = m_chart.notes[m_selected];
-    const bool wasLong = note.isLong();
     note.kind = kind;
     note.tick = tick;
-    note.endTick = isLong ? (wasLong ? endTick : qMax(endTick, tick + qMax(1, m_chart.subdivision))) : tick;
+    note.endTick = isLong ? endTick : tick;
     note.isFake = m_fake->isChecked();
     if (note.type == QStringLiteral("EdgeNote")) {
         const QPointF oldStart = note.coordinates();
@@ -1328,7 +1329,7 @@ void EditorWindow::applyProperties()
         note.edge = m_edgeBox->currentIndex();
         note.pos = note.edge < 2 ? oldStart.y() : oldStart.x();
         note.endPos = note.edge < 2 ? oldEnd.y() : oldEnd.x();
-        const qreal limit = note.edge < 2 ? 9.0 : 12.0;
+        const qreal limit = note.edge < 2 ? ChartGridHeight : ChartGridWidth;
         note.pos = qBound(0.0, note.pos, limit);
         note.endPos = qBound(0.0, note.endPos, limit);
     }
