@@ -22,6 +22,8 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QLinearGradient>
+#include <QRadialGradient>
 #include <QPixmap>
 #include <QPushButton>
 #include <QSizePolicy>
@@ -84,48 +86,168 @@ bool isAllowedExtension(const QString &path, const QStringList &extensions)
 }
 }
 
-class CircularPreview : public QLabel {
+class StagePreview : public QWidget {
 public:
-    explicit CircularPreview(QWidget *parent = nullptr) : QLabel(parent)
+    explicit StagePreview(QWidget *parent = nullptr) : QWidget(parent)
     {
-        setAlignment(Qt::AlignCenter);
-        setMinimumSize(240, 240);
-        setStyleSheet("background:#202123;color:#898b90");
+        setMinimumSize(300, 410);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+        setAutoFillBackground(false);
     }
 
-    void setCover(const QPixmap &cover)
+    void setChart(const Chart *chart, const QPixmap &cover, int selected)
     {
+        m_chart = chart;
         m_cover = cover;
+        m_selected = selected;
         update();
     }
 
 protected:
-    void paintEvent(QPaintEvent *event) override
+    void paintEvent(QPaintEvent *) override
     {
-        QLabel::paintEvent(event);
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
-        const int side = qMin(width(), height()) - 8;
-        const QRectF circle((width() - side) / 2.0, (height() - side) / 2.0, side, side);
-        if (m_cover.isNull()) {
-            painter.setPen(QColor("#898b90"));
-            painter.drawText(circle, Qt::AlignCenter, QStringLiteral("曲绘将在此预览"));
-        } else {
-            const QPixmap scaled = m_cover.scaled(side, side, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-            QPainterPath clip;
-            clip.addEllipse(circle);
-            painter.setClipPath(clip);
-            painter.drawPixmap(QRect((width() - side) / 2, (height() - side) / 2, side, side), scaled,
-                               QRect((scaled.width() - side) / 2, (scaled.height() - side) / 2, side, side));
-            painter.setClipping(false);
-            painter.setPen(QPen(QColor("#e7e7e8"), 2));
-            painter.setBrush(Qt::NoBrush);
-            painter.drawEllipse(circle);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform);
+        const QRectF canvas = rect().adjusted(1, 1, -1, -1);
+        const QColor cyan("#20d7ff");
+        const QColor ice("#edfaff");
+        const QColor amber("#ffb55f");
+
+        painter.fillRect(rect(), QColor("#05090d"));
+        if (!m_cover.isNull()) {
+            const QPixmap backdrop = m_cover.scaled(size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+            painter.setOpacity(0.24);
+            painter.drawPixmap(rect(), backdrop, QRect((backdrop.width() - width()) / 2,
+                                                       (backdrop.height() - height()) / 2, width(), height()));
+            painter.setOpacity(1.0);
         }
+        QLinearGradient shade(canvas.topLeft(), canvas.bottomLeft());
+        shade.setColorAt(0.0, QColor(5, 10, 14, 150));
+        shade.setColorAt(0.45, QColor(0, 3, 6, 215));
+        shade.setColorAt(1.0, QColor(1, 7, 11, 245));
+        painter.fillRect(canvas, shade);
+
+        const qreal left = canvas.left() + canvas.width() * 0.08;
+        const qreal right = canvas.right() - canvas.width() * 0.08;
+        const qreal top = canvas.top() + 38.0;
+        const qreal bottom = canvas.bottom() - 50.0;
+        const qreal horizonY = top + (bottom - top) * 0.43;
+        const QPointF vanishing(canvas.center().x(), horizonY);
+
+        QPainterPath frame;
+        frame.moveTo(left + 24, top);
+        frame.lineTo(right - 24, top);
+        frame.lineTo(right, top + 24);
+        frame.lineTo(right, bottom - 26);
+        frame.lineTo(right - 25, bottom);
+        frame.lineTo(left + 25, bottom);
+        frame.lineTo(left, bottom - 26);
+        frame.lineTo(left, top + 24);
+        frame.closeSubpath();
+        painter.setPen(QPen(QColor(236, 248, 252, 210), 3.0));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(frame);
+        painter.setPen(QPen(QColor(255, 255, 255, 80), 1));
+        painter.drawLine(QPointF(left + 32, top + 8), QPointF(right - 32, top + 8));
+        painter.drawLine(QPointF(left + 32, bottom - 8), QPointF(right - 32, bottom - 8));
+
+        const qreal railWidth = qMax<qreal>(8.0, canvas.width() * 0.026);
+        for (qreal x : {left + 11, right - 11}) {
+            QLinearGradient rail(QPointF(x - railWidth, top), QPointF(x + railWidth, top));
+            rail.setColorAt(0.0, QColor(3, 64, 91, 80));
+            rail.setColorAt(0.5, cyan);
+            rail.setColorAt(1.0, QColor(214, 249, 255, 180));
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(rail);
+            painter.drawRect(QRectF(x - railWidth / 2, top + 35, railWidth, bottom - top - 70));
+        }
+
+        const qreal nearLeft = left + canvas.width() * 0.13;
+        const qreal nearRight = right - canvas.width() * 0.13;
+        const qreal farHalf = canvas.width() * 0.055;
+        QPainterPath field;
+        field.moveTo(vanishing.x() - farHalf, horizonY);
+        field.lineTo(vanishing.x() + farHalf, horizonY);
+        field.lineTo(nearRight, bottom - 20);
+        field.lineTo(nearLeft, bottom - 20);
+        field.closeSubpath();
+        QLinearGradient fieldFill(QPointF(0, horizonY), QPointF(0, bottom));
+        fieldFill.setColorAt(0.0, QColor(4, 12, 17, 80));
+        fieldFill.setColorAt(1.0, QColor(3, 17, 24, 230));
+        painter.setPen(QPen(QColor(130, 227, 244, 45), 1));
+        painter.setBrush(fieldFill);
+        painter.drawPath(field);
+
+        for (int lane = 0; lane <= LaneCount; ++lane) {
+            const qreal ratio = lane / static_cast<qreal>(LaneCount);
+            painter.setPen(QPen(QColor(174, 236, 246, lane == 0 || lane == LaneCount ? 80 : 42), 1));
+            painter.drawLine(QPointF(vanishing.x() - farHalf + ratio * farHalf * 2, horizonY),
+                             QPointF(nearLeft + ratio * (nearRight - nearLeft), bottom - 20));
+        }
+        for (int row = 0; row < 14; ++row) {
+            const qreal t = row / 13.0;
+            const qreal depth = t * t;
+            const qreal y = horizonY + depth * (bottom - 20 - horizonY);
+            const qreal half = farHalf + depth * ((nearRight - nearLeft) / 2 - farHalf);
+            painter.setPen(QPen(QColor(177, 233, 242, row == 13 ? 120 : 42), row == 13 ? 1.6 : 1));
+            painter.drawLine(QPointF(vanishing.x() - half, y), QPointF(vanishing.x() + half, y));
+        }
+
+        if (m_chart) {
+            const int visibleTicks = qMax(16, m_chart->subdivision * m_chart->beatsPerMeasure * 2);
+            for (int i = 0; i < m_chart->notes.size(); ++i) {
+                const Note &note = m_chart->notes.at(i);
+                const int wrappedTick = ((note.tick % visibleTicks) + visibleTicks) % visibleTicks;
+                const qreal progress = 1.0 - wrappedTick / static_cast<qreal>(visibleTicks);
+                const qreal depth = progress * progress;
+                const int lane = note.type == QStringLiteral("EdgeNote") ? note.edge : 4;
+                const qreal laneRatio = (lane + 0.5) / LaneCount;
+                const qreal half = farHalf + depth * ((nearRight - nearLeft) / 2 - farHalf);
+                const qreal y = horizonY + depth * (bottom - 20 - horizonY);
+                const qreal x = vanishing.x() - half + laneRatio * half * 2;
+                const qreal noteWidth = 7.0 + depth * 28.0;
+                const qreal noteHeight = 3.0 + depth * 7.0;
+                const QColor noteColor = note.isFake ? amber : (i == m_selected ? ice : cyan);
+                QRadialGradient glow(QPointF(x, y), noteWidth * 1.8);
+                glow.setColorAt(0.0, QColor(noteColor.red(), noteColor.green(), noteColor.blue(), 180));
+                glow.setColorAt(1.0, QColor(noteColor.red(), noteColor.green(), noteColor.blue(), 0));
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(glow);
+                painter.drawEllipse(QPointF(x, y), noteWidth * 1.8, noteHeight * 2.5);
+                painter.setPen(QPen(ice, i == m_selected ? 2.0 : 1.0));
+                painter.setBrush(noteColor);
+                painter.drawRoundedRect(QRectF(x - noteWidth / 2, y - noteHeight / 2,
+                                               noteWidth, noteHeight), 2, 2);
+            }
+        }
+
+        painter.setPen(QPen(QColor(255, 255, 255, 55), 1));
+        for (int ray = 0; ray < 5; ++ray) {
+            const qreal offset = ray * canvas.width() * 0.055;
+            painter.drawLine(vanishing, QPointF(left + offset, top));
+            painter.drawLine(vanishing, QPointF(right - offset, top));
+        }
+
+        painter.setFont(QFont(QStringLiteral("Bahnschrift SemiCondensed"), 10, QFont::DemiBold));
+        painter.setPen(ice);
+        painter.drawText(QRectF(left + 22, top + 14, right - left - 44, 24), Qt::AlignLeft,
+                         m_chart ? m_chart->title.toUpper() : QStringLiteral("UNTITLED CHART"));
+        painter.setFont(QFont(QStringLiteral("Consolas"), 8));
+        painter.setPen(QColor("#9cb3bc"));
+        const QString stats = m_chart
+            ? QStringLiteral("%1 BPM   /   %2 NOTES   /   %3×%4 GRID")
+                  .arg(m_chart->bpm).arg(m_chart->notes.size()).arg(m_chart->subdivision).arg(m_chart->beatsPerMeasure)
+            : QStringLiteral("PREVIEW OFFLINE");
+        painter.drawText(QRectF(left + 22, bottom - 40, right - left - 44, 24), Qt::AlignCenter, stats);
+        painter.setPen(QPen(cyan, 1));
+        painter.drawLine(QPointF(left + 35, bottom - 15), QPointF(right - 35, bottom - 15));
     }
 
 private:
+    const Chart *m_chart = nullptr;
     QPixmap m_cover;
+    int m_selected = -1;
 };
 
 JudgePlane::JudgePlane(QWidget *parent) : QWidget(parent)
@@ -403,12 +525,15 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
     columns->addWidget(centerScroll);
 
     auto *preview = new QWidget(columns);
-    preview->setStyleSheet("background:#191a1c");
+    preview->setStyleSheet("background:#090d11");
     auto *previewLayout = new QVBoxLayout(preview);
-    previewLayout->setContentsMargins(14, 10, 14, 10);
-    previewLayout->addWidget(new QLabel(QStringLiteral("判定区 / 曲绘预览"), preview));
-    m_coverPreview = new CircularPreview(preview);
-    previewLayout->addWidget(m_coverPreview, 1, Qt::AlignCenter);
+    previewLayout->setContentsMargins(10, 8, 10, 10);
+    previewLayout->setSpacing(7);
+    auto *previewHeader = new QLabel(QStringLiteral("LIVE STAGE  /  判定区预览"), preview);
+    previewHeader->setStyleSheet("color:#dff9ff;font-family:'Bahnschrift SemiCondensed';font-weight:600;letter-spacing:2px;padding:2px 4px");
+    previewLayout->addWidget(previewHeader);
+    m_stagePreview = new StagePreview(preview);
+    previewLayout->addWidget(m_stagePreview, 1);
     previewLayout->addWidget(section(QStringLiteral("谱面信息")));
     auto *metadata = new QFormLayout;
     m_title = new QLineEdit(m_chart.title, preview);
@@ -436,7 +561,11 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
     connect(deleteAction, &QAction::triggered, this, &EditorWindow::deleteSelected);
     connect(selectAction, &QAction::triggered, this, [this] { m_tool = QStringLiteral("select"); m_plane->setTool(m_tool, m_edge); });
     connect(placeAction, &QAction::triggered, this, [this] { m_tool = QStringLiteral("place"); m_plane->setTool(m_tool, m_edge); });
-    connect(m_title, &QLineEdit::textEdited, this, [this] { m_chart.title = m_title->text(); markDirty(); });
+    connect(m_title, &QLineEdit::textEdited, this, [this] {
+        m_chart.title = m_title->text();
+        markDirty();
+        refreshPreview();
+    });
     connect(m_bpm, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { setTiming(m_bpm->value(), m_subdivision->value(), m_beatsPerMeasure->value()); });
     connect(m_subdivision, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { setTiming(m_bpm->value(), m_subdivision->value(), m_beatsPerMeasure->value()); });
     connect(m_beatsPerMeasure, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { setTiming(m_bpm->value(), m_subdivision->value(), m_beatsPerMeasure->value()); });
@@ -511,7 +640,7 @@ void EditorWindow::refreshPreview()
         ? QString() : QFileInfo(m_chartPath).dir().filePath(m_chart.jacketPath);
     QPixmap cover;
     if (!coverPath.isEmpty()) cover.load(coverPath);
-    m_coverPreview->setCover(cover);
+    m_stagePreview->setChart(&m_chart, cover, m_selected);
     const auto labels = findChildren<QLabel *>();
     for (QLabel *label : labels) {
         if (label->objectName() == QStringLiteral("musicPathLabel"))

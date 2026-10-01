@@ -6,7 +6,7 @@
 #include <QWidget>
 
 class QComboBox;
-class CircularPreview;
+class StagePreview;
 class QLineEdit;
 class QListWidget;
 class QCheckBox;
@@ -87,5 +87,5 @@ private:
     QCheckBox *m_fake = nullptr;
     QListWidget *m_noteList = nullptr;
     QLabel *m_status = nullptr;
-    CircularPreview *m_coverPreview = nullptr;
+    StagePreview *m_stagePreview = nullptr;
 };
