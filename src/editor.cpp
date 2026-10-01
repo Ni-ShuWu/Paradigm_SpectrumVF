@@ -133,8 +133,21 @@ public:
     explicit PerspectivePreview(QWidget *parent = nullptr) : QWidget(parent)
     {
         setMinimumSize(480, 270);
+        QSizePolicy policy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        policy.setHeightForWidth(true);
+        setSizePolicy(policy);
         setMouseTracking(true);
         setCursor(Qt::PointingHandCursor);
+    }
+
+    QSize sizeHint() const override
+    {
+        return QSize(640, 360);
+    }
+
+    int heightForWidth(int width) const override
+    {
+        return qRound(width * 9.0 / 16.0);
     }
 
     void setChart(const QPixmap &cover, const QVector<Note> *notes, int selected,
@@ -264,7 +277,7 @@ protected:
             painter.fillRect(screen, QColor(0, 3, 7, 205));
         }
 
-        const QPointF horizon(w * 0.5, h * 0.34);
+        const QPointF horizon(w * 0.5, h * 0.20);
         painter.setPen(QPen(QColor(230, 244, 247, 42), 1));
         for (int scan = 0; scan < 15; ++scan) {
             const qreal y = h * (0.12 + scan * 0.052);
@@ -292,7 +305,10 @@ protected:
         painter.drawLine(QPointF(w * 0.115, h * 0.075), QPointF(w * 0.885, h * 0.075));
         painter.drawLine(QPointF(w * 0.115, h * 0.925), QPointF(w * 0.885, h * 0.925));
 
-        const QPolygonF field = judgeQuad();
+        const QPolygonF field{QPointF(w * 0.46, h * 0.20),
+                              QPointF(w * 0.54, h * 0.20),
+                              QPointF(w * 0.87, h * 0.89),
+                              QPointF(w * 0.13, h * 0.89)};
         QPainterPath fieldPath;
         fieldPath.addPolygon(field);
         QLinearGradient track(0, h * 0.24, 0, h * 0.9);
@@ -336,12 +352,28 @@ protected:
                                 Qt::SolidLine, Qt::RoundCap));
             painter.drawLine(from, to);
         };
-        drawRail(QPointF(w * 0.35, h * 0.34), QPointF(w * 0.13, h * 0.89), qMax<qreal>(3.0, w * 0.006));
-        drawRail(QPointF(w * 0.65, h * 0.34), QPointF(w * 0.87, h * 0.89), qMax<qreal>(3.0, w * 0.006));
+        drawRail(horizon, QPointF(w * 0.13, h * 0.89), qMax<qreal>(3.0, w * 0.006));
+        drawRail(horizon, QPointF(w * 0.87, h * 0.89), qMax<qreal>(3.0, w * 0.006));
         painter.setPen(QPen(QColor(217, 248, 252, 185), 1.2));
         painter.drawLine(QPointF(w * 0.13, h * 0.89), QPointF(w * 0.87, h * 0.89));
         painter.setPen(QPen(QColor(53, 218, 249, 95), 1));
         painter.drawLine(QPointF(w * 0.15, h * 0.91), QPointF(w * 0.85, h * 0.91));
+
+        const QRectF judge = judgeRect();
+        painter.fillRect(judge, QColor(4, 11, 14));
+        painter.setPen(QPen(QColor(86, 226, 242, 42), 1));
+        for (int column = 1; column < 12; ++column) {
+            const qreal x = judge.left() + judge.width() * column / 12.0;
+            painter.drawLine(QPointF(x, judge.top()), QPointF(x, judge.bottom()));
+        }
+        for (int row = 1; row < 9; ++row) {
+            const qreal y = judge.top() + judge.height() * row / 9.0;
+            painter.drawLine(QPointF(judge.left(), y), QPointF(judge.right(), y));
+        }
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(102, 226, 244, 210), qMax<qreal>(1.5, w * 0.003),
+                            Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.drawRoundedRect(judge, w * 0.004, w * 0.004);
 
         painter.setPen(QPen(QColor(55, 218, 246, 145), 1));
         painter.setBrush(QColor(13, 92, 119, 145));
@@ -427,40 +459,31 @@ protected:
     }
 
 private:
-    QPolygonF judgeQuad() const
+    QRectF judgeRect() const
     {
-        return QPolygonF{QPointF(width() * 0.35, height() * 0.34),
-                         QPointF(width() * 0.65, height() * 0.34),
-                         QPointF(width() * 0.87, height() * 0.89),
-                         QPointF(width() * 0.13, height() * 0.89)};
+        return QRectF(width() * 0.20, height() * 0.28,
+                      width() * 0.60, height() * 0.50);
     }
 
     QPainterPath judgePath() const
     {
         QPainterPath path;
-        path.addPolygon(judgeQuad());
+        path.addRect(judgeRect());
         return path;
     }
 
     QPointF planePoint(qreal x, qreal y) const
     {
-        const QPolygonF plane = judgeQuad();
-        const qreal vertical = 1.0 - qBound(0.0, y / 9.0, 1.0);
-        const QPointF left = plane.at(0) * (1.0 - vertical) + plane.at(3) * vertical;
-        const QPointF right = plane.at(1) * (1.0 - vertical) + plane.at(2) * vertical;
-        return left * (1.0 - qBound(0.0, x / 12.0, 1.0))
-            + right * qBound(0.0, x / 12.0, 1.0);
+        const QRectF plane = judgeRect();
+        return QPointF(plane.left() + qBound(0.0, x / 12.0, 1.0) * plane.width(),
+                       plane.bottom() - qBound(0.0, y / 9.0, 1.0) * plane.height());
     }
 
     QPointF chartPosition(const QPointF &point) const
     {
-        const QPolygonF plane = judgeQuad();
-        const qreal vertical = qBound(0.0, (point.y() - plane.at(0).y())
-                                               / (plane.at(3).y() - plane.at(0).y()), 1.0);
-        const qreal left = plane.at(0).x() * (1.0 - vertical) + plane.at(3).x() * vertical;
-        const qreal right = plane.at(1).x() * (1.0 - vertical) + plane.at(2).x() * vertical;
-        const qreal x = qBound(0.0, (point.x() - left) / (right - left), 1.0) * 12.0;
-        const qreal y = (1.0 - vertical) * 9.0;
+        const QRectF plane = judgeRect();
+        const qreal x = qBound(0.0, (point.x() - plane.left()) / plane.width(), 1.0) * 12.0;
+        const qreal y = (1.0 - qBound(0.0, (point.y() - plane.top()) / plane.height(), 1.0)) * 9.0;
         return QPointF(x, y);
     }
 
@@ -810,7 +833,7 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
     previewLayout->setContentsMargins(14, 10, 14, 10);
     previewLayout->addWidget(new QLabel(QStringLiteral("3D 风格谱面预览 · 判定场 12×9"), preview));
     m_coverPreview = new PerspectivePreview(preview);
-    previewLayout->addWidget(m_coverPreview, 1);
+    previewLayout->addWidget(m_coverPreview, 0, Qt::AlignTop);
     auto *playback = new QHBoxLayout;
     m_playButton = new QToolButton(preview);
     m_playButton->setText(QStringLiteral("▶"));
