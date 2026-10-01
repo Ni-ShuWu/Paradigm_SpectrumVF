@@ -360,7 +360,6 @@ protected:
         painter.drawLine(QPointF(w * 0.15, h * 0.91), QPointF(w * 0.85, h * 0.91));
 
         const QRectF judge = judgeRect();
-        painter.fillRect(judge, QColor(4, 11, 14));
         painter.setPen(QPen(QColor(86, 226, 242, 42), 1));
         for (int column = 1; column < 12; ++column) {
             const qreal x = judge.left() + judge.width() * column / 12.0;
