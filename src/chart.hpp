@@ -10,14 +10,20 @@ struct Note {
     QString type;
     QString kind = QStringLiteral("tap");
     int tick = 0;
+    int endTick = 0;
     bool isFake = false;
     int edge = 0;
     double pos = 0.0;
+    double endPos = 0.0;
     double x = 0.0;
     double y = 0.0;
+    double endX = 0.0;
+    double endY = 0.0;
 
+    bool isLong() const;
     QJsonObject toJson() const;
     QPointF coordinates() const;
+    QPointF endCoordinates() const;
 };
 
 struct Chart {
