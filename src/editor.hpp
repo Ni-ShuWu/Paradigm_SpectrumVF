@@ -4,9 +4,10 @@
 
 #include <QMainWindow>
 #include <QWidget>
+#include <QMediaPlayer>
 
 class QComboBox;
-class CircularPreview;
+class PerspectivePreview;
 class QLineEdit;
 class QListWidget;
 class QCheckBox;
@@ -14,6 +15,9 @@ class QLabel;
 class QMouseEvent;
 class QScrollArea;
 class QSpinBox;
+class QSlider;
+class QTimer;
+class QToolButton;
 
 class JudgePlane : public QWidget {
     Q_OBJECT
@@ -68,9 +72,15 @@ private:
     void applyProperties();
     void deleteSelected();
     void duplicateSelected();
+    void placePreviewNote(int tick, qreal x, qreal y);
+    void movePreviewNote(int index, qreal x, qreal y);
+    void updatePlaybackPosition(qint64 position);
+    void updatePlaybackTick(qint64 position = -1);
+    void setMusicSource();
 
     Chart m_chart;
     QString m_chartPath;
+    QString m_loadedMusicSource;
     QString m_tool = QStringLiteral("select");
     int m_edge = 0;
     int m_selected = -1;
@@ -87,5 +97,14 @@ private:
     QCheckBox *m_fake = nullptr;
     QListWidget *m_noteList = nullptr;
     QLabel *m_status = nullptr;
-    CircularPreview *m_coverPreview = nullptr;
+    PerspectivePreview *m_coverPreview = nullptr;
+    QLabel *m_playbackTime = nullptr;
+    QMediaPlayer *m_mediaPlayer = nullptr;
+    QAudioOutput *m_audioOutput = nullptr;
+    QSlider *m_playbackSlider = nullptr;
+    QToolButton *m_playButton = nullptr;
+    QTimer *m_playbackTimer = nullptr;
+    int m_currentPlaybackTick = -1;
+    qint64 m_currentPlaybackPosition = 0;
+    bool m_seeking = false;
 };

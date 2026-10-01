@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Widgets Multimedia)
 
 add_executable(ParadigmOriginScoreEditor WIN32
     src/main.cpp
@@ -13,7 +13,7 @@ add_executable(ParadigmOriginScoreEditor WIN32
     src/editor.cpp
 )
 target_include_directories(ParadigmOriginScoreEditor PRIVATE src)
-target_link_libraries(ParadigmOriginScoreEditor PRIVATE Qt6::Widgets)
+target_link_libraries(ParadigmOriginScoreEditor PRIVATE Qt6::Widgets Qt6::Multimedia)
 
 include(CTest)
 if(BUILD_TESTING)

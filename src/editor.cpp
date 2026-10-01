@@ -2,11 +2,20 @@
 
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QAudioOutput>
+#include <QMediaPlayer>
+#include <QSlider>
+#include <QTimer>
+#include <QToolButton>
+#include <QTime>
 #include <QComboBox>
+#include <QUrl>
+#include <functional>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFontMetrics>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QInputDialog>
@@ -14,6 +23,7 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QLineF>
 #include <QMenu>
 #include <QMenuBar>
 #include <QSplitter>
@@ -36,6 +46,7 @@
 #include <QStatusBar>
 #include <QStandardPaths>
 #include <QDirIterator>
+#include <limits>
 
 namespace {
 constexpr int LaneCount = 5;
@@ -63,6 +74,13 @@ QPushButton *button(const QString &text, QWidget *parent, bool primary = false)
     return result;
 }
 
+QString formatPlaybackTime(qint64 milliseconds)
+{
+    const qint64 seconds = qMax<qint64>(0, milliseconds) / 1000;
+    return QStringLiteral("%1:%2").arg(seconds / 60, 2, 10, QLatin1Char('0'))
+        .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+}
+
 QString noteDescription(const Note &note)
 {
     const QString category = note.type == QStringLiteral("EdgeNote") ? QStringLiteral("边线") : QStringLiteral("判面");
@@ -84,48 +102,363 @@ bool isAllowedExtension(const QString &path, const QStringList &extensions)
 }
 }
 
-class CircularPreview : public QLabel {
+class PerspectivePreview : public QWidget {
 public:
-    explicit CircularPreview(QWidget *parent = nullptr) : QLabel(parent)
+    explicit PerspectivePreview(QWidget *parent = nullptr) : QWidget(parent)
     {
-        setAlignment(Qt::AlignCenter);
-        setMinimumSize(240, 240);
-        setStyleSheet("background:#202123;color:#898b90");
+        setMinimumSize(480, 270);
+        setMouseTracking(true);
+        setCursor(Qt::PointingHandCursor);
     }
 
-    void setCover(const QPixmap &cover)
+    void setChart(const QPixmap &cover, const QVector<Note> *notes, int selected,
+                  int bpm, int subdivision, int beatsPerMeasure, qreal playbackTick,
+                  bool playing, bool placementMode, const QString &chartTitle)
     {
         m_cover = cover;
+        m_notes = notes;
+        m_selected = selected;
+        m_bpm = bpm;
+        m_subdivision = subdivision;
+        m_beatsPerMeasure = beatsPerMeasure;
+        m_playbackTick = playbackTick;
+        m_chartTitle = chartTitle;
+        m_playing = playing;
+        setPlacementMode(placementMode);
+        update();
+    }
+
+    void setChartTitle(const QString &title)
+    {
+        if (m_chartTitle == title) return;
+        m_chartTitle = title;
+        update();
+    }
+
+    void setPlacementMode(bool enabled)
+    {
+        m_placementMode = enabled;
+        setCursor(m_playing ? Qt::ArrowCursor : enabled ? Qt::CrossCursor : Qt::OpenHandCursor);
+        update();
+    }
+
+    void setInteractionHandlers(std::function<void(qreal, qreal)> placeHandler,
+                                std::function<void(int)> selectHandler,
+                                std::function<void(int, qreal, qreal)> moveHandler)
+    {
+        m_notePlacementHandler = std::move(placeHandler);
+        m_noteSelectionHandler = std::move(selectHandler);
+        m_noteMoveHandler = std::move(moveHandler);
+    }
+
+    void setPlaybackPosition(qreal tick, bool playing)
+    {
+        if (qAbs(m_playbackTick - tick) < 0.01 && m_playing == playing) return;
+        m_playbackTick = tick;
+        m_playing = playing;
+        if (playing) {
+            m_dragIndex = -1;
+            setCursor(Qt::ArrowCursor);
+        }
+        else setCursor(m_placementMode ? Qt::CrossCursor : Qt::OpenHandCursor);
         update();
     }
 
 protected:
-    void paintEvent(QPaintEvent *event) override
+    void mousePressEvent(QMouseEvent *event) override
     {
-        QLabel::paintEvent(event);
+        if (event->button() != Qt::LeftButton || m_playing || !judgePath().contains(event->position())) {
+            QWidget::mousePressEvent(event);
+            return;
+        }
+        if (m_placementMode) {
+            if (m_notePlacementHandler) {
+                const QPointF position = chartPosition(event->position());
+                m_notePlacementHandler(position.x(), position.y());
+            }
+            event->accept();
+            return;
+        }
+
+        const int hit = nearestNote(event->position());
+        if (hit >= 0) {
+            m_selected = hit;
+            if (m_noteSelectionHandler) m_noteSelectionHandler(hit);
+            if (m_notes->at(hit).type == QStringLiteral("SpaceNote")) {
+                m_dragIndex = hit;
+                setCursor(Qt::ClosedHandCursor);
+            }
+        }
+        event->accept();
+    }
+
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (m_dragIndex >= 0 && (event->buttons() & Qt::LeftButton) && !m_playing) {
+            const QPointF position = chartPosition(event->position());
+            if (m_noteMoveHandler) m_noteMoveHandler(m_dragIndex, position.x(), position.y());
+            event->accept();
+            return;
+        }
+        QWidget::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && m_dragIndex >= 0) {
+            m_dragIndex = -1;
+            setCursor(m_placementMode ? Qt::CrossCursor : Qt::OpenHandCursor);
+            event->accept();
+            return;
+        }
+        QWidget::mouseReleaseEvent(event);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
         QPainter painter(this);
         painter.setRenderHint(QPainter::Antialiasing);
-        const int side = qMin(width(), height()) - 8;
-        const QRectF circle((width() - side) / 2.0, (height() - side) / 2.0, side, side);
-        if (m_cover.isNull()) {
-            painter.setPen(QColor("#898b90"));
-            painter.drawText(circle, Qt::AlignCenter, QStringLiteral("曲绘将在此预览"));
-        } else {
-            const QPixmap scaled = m_cover.scaled(side, side, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
-            QPainterPath clip;
-            clip.addEllipse(circle);
-            painter.setClipPath(clip);
-            painter.drawPixmap(QRect((width() - side) / 2, (height() - side) / 2, side, side), scaled,
-                               QRect((scaled.width() - side) / 2, (scaled.height() - side) / 2, side, side));
-            painter.setClipping(false);
-            painter.setPen(QPen(QColor("#e7e7e8"), 2));
-            painter.setBrush(Qt::NoBrush);
-            painter.drawEllipse(circle);
+        const qreal w = width();
+        const qreal h = height();
+        const QRectF screen(0, 0, w, h);
+
+        QLinearGradient atmosphere(0, 0, 0, h);
+        atmosphere.setColorAt(0.0, QColor("#b8c3b6"));
+        atmosphere.setColorAt(0.16, QColor("#39434a"));
+        atmosphere.setColorAt(0.40, QColor("#080d12"));
+        atmosphere.setColorAt(1.0, QColor("#020508"));
+        painter.fillRect(screen, atmosphere);
+        if (!m_cover.isNull()) {
+            const QPixmap scaled = m_cover.scaled(size(), Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+            const QRect source((scaled.width() - width()) / 2, (scaled.height() - height()) / 2, width(), height());
+            painter.setOpacity(0.12);
+            painter.drawPixmap(rect(), scaled, source);
+            painter.setOpacity(1.0);
+            painter.fillRect(screen, QColor(3, 7, 12, 190));
         }
+
+        const QPointF horizon(w * 0.5, h * 0.25);
+        const QPolygonF leftWall{QPointF(0, h * 0.10), QPointF(w * 0.23, h * 0.21),
+                                 QPointF(w * 0.18, h * 0.88), QPointF(0, h * 0.98)};
+        const QPolygonF rightWall{QPointF(w, h * 0.10), QPointF(w * 0.77, h * 0.21),
+                                  QPointF(w * 0.82, h * 0.88), QPointF(w, h * 0.98)};
+        auto fillPolygon = [&painter](const QPolygonF &polygon, const QLinearGradient &gradient) {
+            QPainterPath path;
+            path.addPolygon(polygon);
+            painter.fillPath(path, gradient);
+        };
+        QLinearGradient leftMetal(0, h * 0.2, w * 0.22, h * 0.75);
+        leftMetal.setColorAt(0.0, QColor("#eef1eb"));
+        leftMetal.setColorAt(0.22, QColor("#65727a"));
+        leftMetal.setColorAt(0.48, QColor("#141b21"));
+        leftMetal.setColorAt(0.75, QColor("#aab5b8"));
+        leftMetal.setColorAt(1.0, QColor("#323e45"));
+        QLinearGradient rightMetal(w, h * 0.2, w * 0.78, h * 0.75);
+        rightMetal.setColorAt(0.0, QColor("#eef1eb"));
+        rightMetal.setColorAt(0.22, QColor("#65727a"));
+        rightMetal.setColorAt(0.48, QColor("#141b21"));
+        rightMetal.setColorAt(0.75, QColor("#aab5b8"));
+        rightMetal.setColorAt(1.0, QColor("#323e45"));
+        fillPolygon(leftWall, leftMetal);
+        fillPolygon(rightWall, rightMetal);
+
+        const QPolygonF field = judgeQuad();
+        QPainterPath fieldPath;
+        fieldPath.addPolygon(field);
+        QLinearGradient track(0, h * 0.24, 0, h * 0.9);
+        track.setColorAt(0.0, QColor("#171c20"));
+        track.setColorAt(0.48, QColor("#090d11"));
+        track.setColorAt(1.0, QColor("#13191e"));
+        painter.fillPath(fieldPath, track);
+
+        painter.save();
+        painter.setClipPath(fieldPath);
+        painter.setPen(QPen(QColor(206, 222, 227, 24), 1));
+        for (int line = 1; line < 10; ++line) {
+            const qreal depth = line / 10.0;
+            const qreal y = horizon.y() + (h * 0.87 - horizon.y()) * depth * depth;
+            const qreal halfWidth = w * (0.08 + 0.35 * depth);
+            painter.drawLine(QPointF(w * 0.5 - halfWidth, y), QPointF(w * 0.5 + halfWidth, y));
+        }
+        for (int rail = -4; rail <= 4; ++rail) {
+            const qreal bottomX = w * (0.5 + rail * 0.095);
+            painter.setPen(QPen(rail == 0 ? QColor(89, 204, 230, 52) : QColor(160, 187, 198, 34),
+                                rail == 0 ? 1.3 : 0.8));
+            painter.drawLine(horizon, QPointF(bottomX, h * 0.88));
+        }
+        for (int panel = 0; panel < 3; ++panel) {
+            const qreal depth = 0.28 + panel * 0.19;
+            const qreal y = horizon.y() + (h * 0.86 - horizon.y()) * depth * depth;
+            const qreal halfWidth = w * (0.06 + 0.36 * depth);
+            painter.setPen(QPen(QColor(155, 175, 183, 38), 1));
+            painter.setBrush(QColor(164, 180, 185, 10));
+            painter.drawRect(QRectF(w * 0.5 - halfWidth, y - h * 0.012,
+                                   halfWidth * 2, h * 0.024));
+        }
+        painter.restore();
+
+        auto drawBeam = [&painter](const QPointF &from, const QPointF &to, qreal outerWidth) {
+            painter.setPen(QPen(QColor(225, 238, 239, 110), outerWidth, Qt::SolidLine, Qt::RoundCap));
+            painter.drawLine(from, to);
+            painter.setPen(QPen(QColor(255, 255, 255, 205), qMax<qreal>(1.0, outerWidth * 0.22),
+                                Qt::SolidLine, Qt::RoundCap));
+            painter.drawLine(from, to);
+        };
+        drawBeam(QPointF(w * 0.02, h * 0.13), QPointF(w * 0.19, h * 0.88), qMax<qreal>(4.0, w * 0.014));
+        drawBeam(QPointF(w * 0.98, h * 0.13), QPointF(w * 0.81, h * 0.88), qMax<qreal>(4.0, w * 0.014));
+        painter.setPen(QPen(QColor(83, 217, 246, 210), qMax<qreal>(3.0, w * 0.009)));
+        painter.drawLine(QPointF(w * 0.035, h * 0.18), QPointF(w * 0.035, h * 0.79));
+        painter.drawLine(QPointF(w * 0.965, h * 0.18), QPointF(w * 0.965, h * 0.79));
+        painter.setPen(QPen(QColor(193, 226, 232, 185), 1.1));
+        painter.drawLine(QPointF(w * 0.19, h * 0.88), QPointF(w * 0.81, h * 0.88));
+        painter.setPen(QPen(QColor(83, 217, 246, 85), 1));
+        painter.drawLine(QPointF(w * 0.20, h * 0.90), QPointF(w * 0.80, h * 0.90));
+
+        painter.setPen(QPen(QColor(83, 217, 246, 95), 1));
+        painter.setBrush(QColor(20, 113, 145, 185));
+        painter.drawRoundedRect(QRectF(w * 0.025, h * 0.22, w * 0.025, h * 0.34), w * 0.004, w * 0.004);
+        painter.drawRoundedRect(QRectF(w * 0.95, h * 0.22, w * 0.025, h * 0.34), w * 0.004, w * 0.004);
+        painter.setPen(QPen(QColor(232, 242, 237, 180), 1));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(QRectF(w * 0.022, h * 0.205, w * 0.031, h * 0.37));
+        painter.drawRect(QRectF(w * 0.947, h * 0.205, w * 0.031, h * 0.37));
+
+        if (m_notes) {
+            for (int index = 0; index < m_notes->size(); ++index) {
+                const Note &note = m_notes->at(index);
+                const qreal ticksToHit = note.tick - m_playbackTick;
+                const qreal approachTicks = qMax(1, m_subdivision) * 4.0;
+                if (m_playbackTick >= 0.0 && (ticksToHit > approachTicks || ticksToHit < -0.65)) continue;
+                const QPointF hitPosition = planePoint(note.coordinates().x(), note.coordinates().y());
+                const qreal progress = m_playbackTick < 0.0 ? 0.0
+                    : qBound(0.0, ticksToHit / approachTicks, 1.0);
+                const QPointF position = hitPosition * (1.0 - progress) + horizon * progress;
+                const qreal depth = qBound<qreal>(0.0, (position.y() - horizon.y()) / (h * 0.64), 1.0);
+                const qreal size = qMax<qreal>(4.0, w * (0.008 + depth * 0.025));
+                const QColor color = note.isFake ? QColor("#f2b65c")
+                    : note.type == QStringLiteral("EdgeNote") ? QColor("#49b8ff") : QColor("#5be2f1");
+                const bool approachingHit = m_playbackTick >= 0.0 && ticksToHit <= 0.0;
+                painter.setPen(QPen(approachingHit || index == m_selected ? QColor("#ffffff") : color,
+                                    qMax<qreal>(1.3, size * 0.13), note.isFake ? Qt::DashLine : Qt::SolidLine));
+                painter.setBrush(QColor(color.red(), color.green(), color.blue(),
+                                        m_playbackTick < 0.0 && index != m_selected ? 95 : 210));
+                const QRectF noteRect(position.x() - size, position.y() - size * 0.55,
+                                      size * 2, size * 1.1);
+                painter.drawRoundedRect(noteRect, size * 0.18, size * 0.18);
+                painter.setPen(QPen(QColor(color.red(), color.green(), color.blue(), 95), qMax<qreal>(1.0, size * 0.10)));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawEllipse(position, size * 1.65, size * 0.9);
+            }
+        }
+
+        QLinearGradient header(0, h * 0.03, 0, h * 0.15);
+        header.setColorAt(0.0, QColor(238, 242, 235, 218));
+        header.setColorAt(0.42, QColor(116, 130, 131, 202));
+        header.setColorAt(1.0, QColor(24, 31, 35, 230));
+        painter.fillRect(QRectF(w * 0.13, h * 0.035, w * 0.74, h * 0.105), header);
+        painter.setPen(QPen(QColor(255, 255, 255, 190), 1));
+        painter.drawLine(QPointF(w * 0.13, h * 0.142), QPointF(w * 0.87, h * 0.142));
+        painter.setPen(QColor("#101820"));
+        const QFont titleFont(QStringLiteral("Microsoft YaHei UI"), qMax(9, qRound(h * 0.031)), QFont::Bold);
+        painter.setFont(titleFont);
+        const QFontMetrics titleMetrics(titleFont);
+        const QString displayTitle = titleMetrics.elidedText(m_chartTitle, Qt::ElideRight,
+                                                               qRound(w * 0.34));
+        painter.drawText(QRectF(w * 0.155, h * 0.065, w * 0.36, h * 0.055),
+                         Qt::AlignLeft | Qt::AlignVCenter, displayTitle);
+        const QFont timingFont(QStringLiteral("Consolas"), qMax(8, qRound(h * 0.023)), QFont::DemiBold);
+        painter.setFont(timingFont);
+        const QString timing = QStringLiteral("BPM %1  /  %2 DIV × %3 BEATS")
+                                   .arg(m_bpm).arg(m_subdivision).arg(m_beatsPerMeasure);
+        painter.drawText(QRectF(w * 0.52, h * 0.065, w * 0.33, h * 0.055),
+                         Qt::AlignRight | Qt::AlignVCenter,
+                         QFontMetrics(timingFont).elidedText(timing, Qt::ElideLeft, qRound(w * 0.33)));
+
+        painter.setPen(QColor(238, 246, 247, 225));
+        painter.setFont(QFont(QStringLiteral("Consolas"), qMax(8, qRound(h * 0.025)), QFont::Bold));
+        painter.drawText(QRectF(w * 0.04, h * 0.925, w * 0.92, h * 0.04),
+                         Qt::AlignCenter,
+                         QStringLiteral("%1   /   TICK %2   /   %3 NOTES   /   %4 BEATS PER BAR")
+                             .arg(m_playing ? QStringLiteral("PLAYING") : QStringLiteral("PREVIEW"))
+                             .arg(m_playbackTick < 0.0 ? 0 : static_cast<int>(m_playbackTick))
+                             .arg(m_notes ? m_notes->size() : 0)
+                             .arg(m_beatsPerMeasure));
+        painter.setPen(QPen(QColor(255, 255, 255, 125), 1));
+        painter.drawLine(QPointF(w * 0.04, h * 0.975), QPointF(w * 0.96, h * 0.975));
+        painter.setPen(QColor(90, 212, 239, 195));
+        painter.drawLine(QPointF(w * 0.05, h * 0.975), QPointF(w * 0.18, h * 0.975));
+        painter.drawLine(QPointF(w * 0.82, h * 0.975), QPointF(w * 0.95, h * 0.975));
     }
 
 private:
+    QPolygonF judgeQuad() const
+    {
+        return QPolygonF{QPointF(width() * 0.37, height() * 0.25),
+                         QPointF(width() * 0.63, height() * 0.25),
+                         QPointF(width() * 0.81, height() * 0.88),
+                         QPointF(width() * 0.19, height() * 0.88)};
+    }
+
+    QPainterPath judgePath() const
+    {
+        QPainterPath path;
+        path.addPolygon(judgeQuad());
+        return path;
+    }
+
+    QPointF planePoint(qreal x, qreal y) const
+    {
+        const QPolygonF plane = judgeQuad();
+        const qreal vertical = 1.0 - qBound(0.0, y / 9.0, 1.0);
+        const QPointF left = plane.at(0) * (1.0 - vertical) + plane.at(3) * vertical;
+        const QPointF right = plane.at(1) * (1.0 - vertical) + plane.at(2) * vertical;
+        return left * (1.0 - qBound(0.0, x / 12.0, 1.0))
+            + right * qBound(0.0, x / 12.0, 1.0);
+    }
+
+    QPointF chartPosition(const QPointF &point) const
+    {
+        const QPolygonF plane = judgeQuad();
+        const qreal vertical = qBound(0.0, (point.y() - plane.at(0).y())
+                                               / (plane.at(3).y() - plane.at(0).y()), 1.0);
+        const qreal left = plane.at(0).x() * (1.0 - vertical) + plane.at(3).x() * vertical;
+        const qreal right = plane.at(1).x() * (1.0 - vertical) + plane.at(2).x() * vertical;
+        const qreal x = qBound(0.0, (point.x() - left) / (right - left), 1.0) * 12.0;
+        const qreal y = (1.0 - vertical) * 9.0;
+        return QPointF(x, y);
+    }
+
+    int nearestNote(const QPointF &position) const
+    {
+        if (!m_notes) return -1;
+        int closest = -1;
+        qreal closestDistance = 18.0;
+        for (int index = 0; index < m_notes->size(); ++index) {
+            const QPointF notePosition = planePoint(m_notes->at(index).coordinates().x(),
+                                                    m_notes->at(index).coordinates().y());
+            const qreal distance = QLineF(position, notePosition).length();
+            if (distance < closestDistance) {
+                closestDistance = distance;
+                closest = index;
+            }
+        }
+        return closest;
+    }
+
     QPixmap m_cover;
+    const QVector<Note> *m_notes = nullptr;
+    int m_selected = -1;
+    int m_dragIndex = -1;
+    int m_bpm = 120;
+    int m_subdivision = 4;
+    int m_beatsPerMeasure = 4;
+    QString m_chartTitle = QStringLiteral("范式：起源");
+    qreal m_playbackTick = -1.0;
+    bool m_playing = false;
+    bool m_placementMode = false;
+    std::function<void(qreal, qreal)> m_notePlacementHandler;
+    std::function<void(int)> m_noteSelectionHandler;
+    std::function<void(int, qreal, qreal)> m_noteMoveHandler;
 };
 
 JudgePlane::JudgePlane(QWidget *parent) : QWidget(parent)
@@ -406,9 +739,24 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
     preview->setStyleSheet("background:#191a1c");
     auto *previewLayout = new QVBoxLayout(preview);
     previewLayout->setContentsMargins(14, 10, 14, 10);
-    previewLayout->addWidget(new QLabel(QStringLiteral("判定区 / 曲绘预览"), preview));
-    m_coverPreview = new CircularPreview(preview);
-    previewLayout->addWidget(m_coverPreview, 1, Qt::AlignCenter);
+    previewLayout->addWidget(new QLabel(QStringLiteral("3D 风格谱面预览 · 判定场 12×9"), preview));
+    m_coverPreview = new PerspectivePreview(preview);
+    previewLayout->addWidget(m_coverPreview, 1);
+    auto *playback = new QHBoxLayout;
+    m_playButton = new QToolButton(preview);
+    m_playButton->setText(QStringLiteral("▶"));
+    m_playButton->setToolTip(QStringLiteral("播放 / 暂停"));
+    m_playButton->setEnabled(false);
+    m_playbackSlider = new QSlider(Qt::Horizontal, preview);
+    m_playbackSlider->setRange(0, 0);
+    m_playbackSlider->setEnabled(false);
+    m_playbackTime = new QLabel(QStringLiteral("00:00 / 00:00"), preview);
+    m_playbackTime->setMinimumWidth(104);
+    m_playbackTime->setStyleSheet("font-family:Consolas;color:#aeb4bb");
+    playback->addWidget(m_playButton);
+    playback->addWidget(m_playbackSlider, 1);
+    playback->addWidget(m_playbackTime);
+    previewLayout->addLayout(playback);
     previewLayout->addWidget(section(QStringLiteral("谱面信息")));
     auto *metadata = new QFormLayout;
     m_title = new QLineEdit(m_chart.title, preview);
@@ -434,15 +782,78 @@ EditorWindow::EditorWindow(QWidget *parent) : QMainWindow(parent)
     connect(saveAction, &QAction::triggered, this, [this] { saveChartFile(); });
     connect(copyAction, &QAction::triggered, this, &EditorWindow::duplicateSelected);
     connect(deleteAction, &QAction::triggered, this, &EditorWindow::deleteSelected);
-    connect(selectAction, &QAction::triggered, this, [this] { m_tool = QStringLiteral("select"); m_plane->setTool(m_tool, m_edge); });
-    connect(placeAction, &QAction::triggered, this, [this] { m_tool = QStringLiteral("place"); m_plane->setTool(m_tool, m_edge); });
-    connect(m_title, &QLineEdit::textEdited, this, [this] { m_chart.title = m_title->text(); markDirty(); });
+    connect(selectAction, &QAction::triggered, this, [this] { m_tool = QStringLiteral("select"); m_plane->setTool(m_tool, m_edge); refreshPreview(); });
+    connect(placeAction, &QAction::triggered, this, [this] { m_tool = QStringLiteral("place"); m_plane->setTool(m_tool, m_edge); refreshPreview(); });
+    connect(m_title, &QLineEdit::textEdited, this, [this] {
+        m_chart.title = m_title->text();
+        m_coverPreview->setChartTitle(m_chart.title);
+        markDirty();
+    });
     connect(m_bpm, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { setTiming(m_bpm->value(), m_subdivision->value(), m_beatsPerMeasure->value()); });
     connect(m_subdivision, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { setTiming(m_bpm->value(), m_subdivision->value(), m_beatsPerMeasure->value()); });
     connect(m_beatsPerMeasure, qOverload<int>(&QSpinBox::valueChanged), this, [this](int) { setTiming(m_bpm->value(), m_subdivision->value(), m_beatsPerMeasure->value()); });
-    connect(selectButton, &QPushButton::clicked, this, [this] { m_tool = QStringLiteral("select"); m_plane->setTool(m_tool, m_edge); });
-    connect(placeButton, &QPushButton::clicked, this, [this] { m_tool = QStringLiteral("place"); m_plane->setTool(m_tool, m_edge); });
+    connect(selectButton, &QPushButton::clicked, this, [this] { m_tool = QStringLiteral("select"); m_plane->setTool(m_tool, m_edge); refreshPreview(); });
+    connect(placeButton, &QPushButton::clicked, this, [this] { m_tool = QStringLiteral("place"); m_plane->setTool(m_tool, m_edge); refreshPreview(); });
     connect(m_edgeBox, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) { m_edge = index; m_plane->setTool(m_tool, m_edge); });
+    m_coverPreview->setInteractionHandlers(
+        [this](qreal x, qreal y) {
+            bool ok = false;
+            const int tick = m_tick->text().toInt(&ok);
+            if (!ok || tick < 0) {
+                QMessageBox::warning(this, QStringLiteral("Tick 无效"), QStringLiteral("请先输入非负整数 Tick。"));
+                return;
+            }
+            placePreviewNote(tick, x, y);
+        },
+        [this](int index) { selectNote(index); },
+        [this](int index, qreal x, qreal y) { movePreviewNote(index, x, y); });
+    m_coverPreview->setPlacementMode(false);
+    m_mediaPlayer = new QMediaPlayer(this);
+    m_audioOutput = new QAudioOutput(this);
+    m_mediaPlayer->setAudioOutput(m_audioOutput);
+    m_playbackTimer = new QTimer(this);
+    m_playbackTimer->setInterval(50);
+    connect(m_playButton, &QToolButton::clicked, this, [this] {
+        if (m_mediaPlayer->source().isEmpty()) {
+            updateStatus(QStringLiteral("请先打开包含音乐的曲包谱面"));
+            return;
+        }
+        if (m_mediaPlayer->playbackState() == QMediaPlayer::PlayingState)
+            m_mediaPlayer->pause();
+        else
+            m_mediaPlayer->play();
+    });
+    connect(m_playbackSlider, &QSlider::sliderPressed, this, [this] { m_seeking = true; });
+    connect(m_playbackSlider, &QSlider::sliderReleased, this, [this] {
+        m_seeking = false;
+        m_mediaPlayer->setPosition(m_playbackSlider->value());
+        updatePlaybackPosition(m_mediaPlayer->position());
+    });
+    connect(m_playbackSlider, &QSlider::sliderMoved, this, [this](int position) {
+        if (m_seeking) updatePlaybackPosition(position);
+    });
+    connect(m_mediaPlayer, &QMediaPlayer::durationChanged, this, [this](qint64 duration) {
+        m_playbackSlider->setRange(0, static_cast<int>(qMin<qint64>(duration, std::numeric_limits<int>::max())));
+        updatePlaybackPosition(m_mediaPlayer->position());
+    });
+    connect(m_mediaPlayer, &QMediaPlayer::positionChanged, this, [this](qint64 position) {
+        if (!m_seeking) updatePlaybackPosition(position);
+    });
+    connect(m_mediaPlayer, &QMediaPlayer::playbackStateChanged, this, [this](QMediaPlayer::PlaybackState state) {
+        m_playButton->setText(state == QMediaPlayer::PlayingState ? QStringLiteral("Ⅱ") : QStringLiteral("▶"));
+        if (state == QMediaPlayer::PlayingState) m_playbackTimer->start(); else m_playbackTimer->stop();
+        updatePlaybackTick();
+    });
+    connect(m_mediaPlayer, &QMediaPlayer::mediaStatusChanged, this, [this](QMediaPlayer::MediaStatus status) {
+        if (status == QMediaPlayer::InvalidMedia)
+            updateStatus(QStringLiteral("音乐无法播放，请检查音频格式或 Qt Multimedia 后端"));
+    });
+    connect(m_mediaPlayer, &QMediaPlayer::errorOccurred, this, [this](QMediaPlayer::Error, const QString &error) {
+        updateStatus(QStringLiteral("音频错误：%1").arg(error));
+    });
+    connect(m_playbackTimer, &QTimer::timeout, this, [this] {
+        if (!m_seeking) updatePlaybackTick();
+    });
     connect(m_plane, &JudgePlane::notePlaced, this, &EditorWindow::placeNote);
     connect(m_plane, &JudgePlane::noteSelected, this, &EditorWindow::selectNote);
     connect(m_plane, &JudgePlane::noteMoved, this, [this](int index, int tick, int lane) {
@@ -511,7 +922,15 @@ void EditorWindow::refreshPreview()
         ? QString() : QFileInfo(m_chartPath).dir().filePath(m_chart.jacketPath);
     QPixmap cover;
     if (!coverPath.isEmpty()) cover.load(coverPath);
-    m_coverPreview->setCover(cover);
+    const bool playing = m_mediaPlayer && m_mediaPlayer->playbackState() == QMediaPlayer::PlayingState;
+    const bool placementMode = m_tool == QStringLiteral("place");
+    const qreal playbackTick = m_currentPlaybackPosition * static_cast<qreal>(m_chart.bpm)
+        * m_chart.subdivision / 60000.0;
+    m_coverPreview->setChart(cover, &m_chart.notes, m_selected, m_chart.bpm,
+                             m_chart.subdivision, m_chart.beatsPerMeasure,
+                             m_mediaPlayer && m_mediaPlayer->source().isEmpty() ? -1.0 : playbackTick,
+                             playing, placementMode, m_chart.title);
+    setMusicSource();
     const auto labels = findChildren<QLabel *>();
     for (QLabel *label : labels) {
         if (label->objectName() == QStringLiteral("musicPathLabel"))
@@ -653,6 +1072,42 @@ bool EditorWindow::saveChartFile()
     return true;
 }
 
+void EditorWindow::placePreviewNote(int tick, qreal x, qreal y)
+{
+    Note note;
+    note.type = QStringLiteral("SpaceNote");
+    note.kind = m_kind->currentText();
+    note.tick = tick;
+    note.isFake = m_fake->isChecked();
+    note.x = qBound(0.0, x, 12.0);
+    note.y = qBound(0.0, y, 9.0);
+    m_chart.notes.append(note);
+    m_selected = m_chart.notes.size() - 1;
+    m_tick->setText(QString::number(tick));
+    m_tool = QStringLiteral("select");
+    m_plane->setTool(m_tool, m_edge);
+    markDirty();
+    refresh();
+    selectNote(m_selected);
+}
+
+void EditorWindow::movePreviewNote(int index, qreal x, qreal y)
+{
+    if (index < 0 || index >= m_chart.notes.size()) return;
+    Note &note = m_chart.notes[index];
+    if (note.type != QStringLiteral("SpaceNote")) return;
+    const qreal nextX = qBound(0.0, x, 12.0);
+    const qreal nextY = qBound(0.0, y, 9.0);
+    if (qAbs(note.x - nextX) < 0.001 && qAbs(note.y - nextY) < 0.001) return;
+    note.x = nextX;
+    note.y = nextY;
+    m_selected = index;
+    m_plane->setNotes(&m_chart.notes, m_selected);
+    m_noteList->item(index)->setText(noteDescription(note));
+    markDirty();
+    refreshPreview();
+}
+
 void EditorWindow::placeNote(int tick, int lane)
 {
     Note note;
@@ -683,7 +1138,9 @@ void EditorWindow::setTiming(int bpm, int subdivision, int beatsPerMeasure)
     m_chart.subdivision = subdivision;
     m_chart.beatsPerMeasure = beatsPerMeasure;
     m_plane->setTimingGrid(subdivision, beatsPerMeasure);
+    updatePlaybackTick();
     markDirty();
+    refreshPreview();
 }
 
 void EditorWindow::selectNote(int index)
@@ -727,6 +1184,51 @@ void EditorWindow::duplicateSelected()
     Note note = m_chart.notes.at(m_selected);
     ++note.tick;
     m_chart.notes.append(note); m_selected = m_chart.notes.size() - 1; markDirty(); refresh();
+}
+
+void EditorWindow::updatePlaybackPosition(qint64 position)
+{
+    if (!m_seeking) m_playbackSlider->setValue(static_cast<int>(position));
+    m_playbackTime->setText(QStringLiteral("%1 / %2")
+        .arg(formatPlaybackTime(position), formatPlaybackTime(m_mediaPlayer->duration())));
+    updatePlaybackTick(position);
+}
+
+void EditorWindow::updatePlaybackTick(qint64 position)
+{
+    if (position < 0) position = m_mediaPlayer ? m_mediaPlayer->position() : 0;
+    m_currentPlaybackPosition = position;
+    const bool hasMusic = m_mediaPlayer && !m_mediaPlayer->source().isEmpty();
+    qreal preciseTick = -1.0;
+    if (hasMusic && m_chart.bpm > 0 && m_chart.subdivision > 0) {
+        preciseTick = position * static_cast<qreal>(m_chart.bpm)
+            * m_chart.subdivision / 60000.0;
+        m_currentPlaybackTick = static_cast<int>(qMin<qreal>(preciseTick,
+            std::numeric_limits<int>::max()));
+    } else {
+        m_currentPlaybackTick = -1;
+    }
+    m_coverPreview->setPlaybackPosition(preciseTick,
+        hasMusic && m_mediaPlayer->playbackState() == QMediaPlayer::PlayingState);
+}
+
+void EditorWindow::setMusicSource()
+{
+    const QString source = m_chartPath.isEmpty() || m_chart.musicPath.isEmpty()
+        ? QString() : QFileInfo(m_chartPath).dir().absoluteFilePath(m_chart.musicPath);
+    if (source == m_loadedMusicSource) return;
+    m_loadedMusicSource = source;
+    m_mediaPlayer->stop();
+    m_mediaPlayer->setSource(source.isEmpty() ? QUrl() : QUrl::fromLocalFile(source));
+    m_currentPlaybackTick = -1;
+    m_currentPlaybackPosition = 0;
+    m_coverPreview->setPlaybackPosition(-1.0, false);
+    m_playbackSlider->setEnabled(!source.isEmpty());
+    m_playbackSlider->setRange(0, 0);
+    m_playbackSlider->setValue(0);
+    m_playbackTime->setText(QStringLiteral("00:00 / 00:00"));
+    m_playButton->setEnabled(!source.isEmpty());
+    refreshPreview();
 }
 
 void EditorWindow::closeEvent(QCloseEvent *event)
