@@ -307,40 +307,47 @@ protected:
         painter.drawLine(QPointF(w * 0.115, h * 0.075), QPointF(w * 0.885, h * 0.075));
         painter.drawLine(QPointF(w * 0.115, h * 0.925), QPointF(w * 0.885, h * 0.925));
 
-        const QPolygonF field{QPointF(w * 0.46, h * 0.20),
-                              QPointF(w * 0.54, h * 0.20),
-                              QPointF(w * 0.87, h * 0.89),
-                              QPointF(w * 0.13, h * 0.89)};
+        const QRectF judge = judgeRect();
+        const qreal fieldTopHalf = w * 0.04;
+        const QPolygonF field{QPointF(horizon.x() - fieldTopHalf, horizon.y()),
+                              QPointF(horizon.x() + fieldTopHalf, horizon.y()),
+                              judge.bottomRight(),
+                              judge.bottomLeft()};
         QPainterPath fieldPath;
         fieldPath.addPolygon(field);
-        QLinearGradient track(0, h * 0.24, 0, h * 0.9);
+        QLinearGradient track(0, horizon.y(), 0, judge.bottom());
         track.setColorAt(0.0, QColor("#171c20"));
         track.setColorAt(0.48, QColor("#090d11"));
         track.setColorAt(1.0, QColor("#13191e"));
         painter.fillPath(fieldPath, track);
 
+        auto fieldHalfWidthAt = [&](qreal depth) {
+            return fieldTopHalf + (judge.width() / 2.0 - fieldTopHalf) * depth;
+        };
+        auto fieldYAt = [&](qreal depth) {
+            return horizon.y() + (judge.bottom() - horizon.y()) * depth * depth;
+        };
         painter.save();
         painter.setClipPath(fieldPath);
         painter.setPen(QPen(QColor(206, 222, 227, 24), 1));
         for (int line = 1; line < 10; ++line) {
             const qreal depth = line / 10.0;
-            const qreal y = horizon.y() + (h * 0.87 - horizon.y()) * depth * depth;
-            const qreal halfWidth = w * (0.08 + 0.35 * depth);
-            painter.drawLine(QPointF(w * 0.5 - halfWidth, y), QPointF(w * 0.5 + halfWidth, y));
+            const qreal halfWidth = fieldHalfWidthAt(depth);
+            painter.drawLine(QPointF(w * 0.5 - halfWidth, fieldYAt(depth)),
+                             QPointF(w * 0.5 + halfWidth, fieldYAt(depth)));
         }
         for (int rail = -4; rail <= 4; ++rail) {
-            const qreal bottomX = w * (0.5 + rail * 0.095);
+            const qreal bottomX = judge.left() + judge.width() * (rail + 4) / 8.0;
             painter.setPen(QPen(rail == 0 ? QColor(89, 204, 230, 52) : QColor(160, 187, 198, 34),
                                 rail == 0 ? 1.3 : 0.8));
-            painter.drawLine(horizon, QPointF(bottomX, h * 0.88));
+            painter.drawLine(horizon, QPointF(bottomX, judge.bottom()));
         }
         for (int panel = 0; panel < 3; ++panel) {
             const qreal depth = 0.28 + panel * 0.19;
-            const qreal y = horizon.y() + (h * 0.86 - horizon.y()) * depth * depth;
-            const qreal halfWidth = w * (0.06 + 0.36 * depth);
+            const qreal halfWidth = fieldHalfWidthAt(depth) * 0.92;
             painter.setPen(QPen(QColor(155, 175, 183, 38), 1));
             painter.setBrush(QColor(164, 180, 185, 10));
-            painter.drawRect(QRectF(w * 0.5 - halfWidth, y - h * 0.012,
+            painter.drawRect(QRectF(w * 0.5 - halfWidth, fieldYAt(depth) - h * 0.012,
                                    halfWidth * 2, h * 0.024));
         }
         painter.restore();
@@ -354,14 +361,14 @@ protected:
                                 Qt::SolidLine, Qt::RoundCap));
             painter.drawLine(from, to);
         };
-        drawRail(horizon, QPointF(w * 0.13, h * 0.89), qMax<qreal>(3.0, w * 0.006));
-        drawRail(horizon, QPointF(w * 0.87, h * 0.89), qMax<qreal>(3.0, w * 0.006));
+        drawRail(horizon, judge.bottomLeft(), qMax<qreal>(3.0, w * 0.006));
+        drawRail(horizon, judge.bottomRight(), qMax<qreal>(3.0, w * 0.006));
         painter.setPen(QPen(QColor(217, 248, 252, 185), 1.2));
-        painter.drawLine(QPointF(w * 0.13, h * 0.89), QPointF(w * 0.87, h * 0.89));
+        painter.drawLine(judge.bottomLeft(), judge.bottomRight());
         painter.setPen(QPen(QColor(53, 218, 249, 95), 1));
-        painter.drawLine(QPointF(w * 0.15, h * 0.91), QPointF(w * 0.85, h * 0.91));
+        painter.drawLine(QPointF(judge.left() + w * 0.02, judge.bottom() + h * 0.02),
+                         QPointF(judge.right() - w * 0.02, judge.bottom() + h * 0.02));
 
-        const QRectF judge = judgeRect();
         painter.setPen(QPen(QColor(86, 226, 242, 42), 1));
         for (int column = 1; column < ChartGridWidth; ++column) {
             const qreal x = judge.left() + judge.width() * column / qreal(ChartGridWidth);
