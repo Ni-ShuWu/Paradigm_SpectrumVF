@@ -307,43 +307,95 @@ protected:
         painter.drawLine(QPointF(w * 0.115, h * 0.075), QPointF(w * 0.885, h * 0.075));
         painter.drawLine(QPointF(w * 0.115, h * 0.925), QPointF(w * 0.885, h * 0.925));
 
-        const QPolygonF field{QPointF(w * 0.46, h * 0.20),
-                              QPointF(w * 0.54, h * 0.20),
-                              QPointF(w * 0.87, h * 0.89),
-                              QPointF(w * 0.13, h * 0.89)};
-        QPainterPath fieldPath;
-        fieldPath.addPolygon(field);
-        QLinearGradient track(0, h * 0.24, 0, h * 0.9);
-        track.setColorAt(0.0, QColor("#171c20"));
-        track.setColorAt(0.48, QColor("#090d11"));
-        track.setColorAt(1.0, QColor("#13191e"));
-        painter.fillPath(fieldPath, track);
+        const QRectF judge = judgeRect();
+        auto lerpPoint = [](const QPointF &a, const QPointF &b, qreal t) {
+            return a + (b - a) * t;
+        };
+        // 隧道尽头的收束开口：四个面（顶/底/左/右）都向它汇聚
+        const qreal farHalfW = w * 0.013;
+        const qreal farHalfH = h * 0.022;
+        const QPointF farTL(horizon.x() - farHalfW, horizon.y() - farHalfH);
+        const QPointF farTR(horizon.x() + farHalfW, horizon.y() - farHalfH);
+        const QPointF farBL(horizon.x() - farHalfW, horizon.y() + farHalfH);
+        const QPointF farBR(horizon.x() + farHalfW, horizon.y() + farHalfH);
 
-        painter.save();
-        painter.setClipPath(fieldPath);
+        const QPolygonF floorPoly{farBL, farBR, judge.bottomRight(), judge.bottomLeft()};
+        const QPolygonF ceilingPoly{judge.topLeft(), judge.topRight(), farTR, farTL};
+        const QPolygonF leftWallPoly{judge.topLeft(), farTL, farBL, judge.bottomLeft()};
+        const QPolygonF rightWallPoly{farTR, judge.topRight(), judge.bottomRight(), farBR};
+
+        auto fillSurface = [&painter](const QPolygonF &poly, const QPointF &far, const QPointF &near,
+                                      const QColor &farColor, const QColor &nearColor) {
+            QLinearGradient gradient(far, near);
+            gradient.setColorAt(0.0, farColor);
+            gradient.setColorAt(1.0, nearColor);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(gradient);
+            painter.drawPolygon(poly);
+            painter.setBrush(Qt::NoBrush);
+        };
+        fillSurface(floorPoly, horizon, (judge.bottomLeft() + judge.bottomRight()) / 2.0,
+                    QColor("#171c20"), QColor("#13191e"));
+        fillSurface(ceilingPoly, horizon, (judge.topLeft() + judge.topRight()) / 2.0,
+                    QColor("#141a1e"), QColor("#0b1013"));
+        fillSurface(leftWallPoly, horizon, (judge.topLeft() + judge.bottomLeft()) / 2.0,
+                    QColor("#12171b"), QColor("#0e1317"));
+        fillSurface(rightWallPoly, horizon, (judge.topRight() + judge.bottomRight()) / 2.0,
+                    QColor("#12171b"), QColor("#0e1317"));
+
+        painter.setPen(QPen(QColor(120, 220, 240, 60), 1));
+        painter.drawRect(QRectF(farTL, farBR));
+
+        // 横向深度线：四个面共用同一深度插值
         painter.setPen(QPen(QColor(206, 222, 227, 24), 1));
         for (int line = 1; line < 10; ++line) {
             const qreal depth = line / 10.0;
-            const qreal y = horizon.y() + (h * 0.87 - horizon.y()) * depth * depth;
-            const qreal halfWidth = w * (0.08 + 0.35 * depth);
-            painter.drawLine(QPointF(w * 0.5 - halfWidth, y), QPointF(w * 0.5 + halfWidth, y));
+            const qreal ease = depth * depth;
+            painter.drawLine(lerpPoint(farBL, judge.bottomLeft(), ease),
+                             lerpPoint(farBR, judge.bottomRight(), ease));
+            painter.drawLine(lerpPoint(farTL, judge.topLeft(), ease),
+                             lerpPoint(farTR, judge.topRight(), ease));
+            painter.drawLine(lerpPoint(farTL, judge.topLeft(), ease),
+                             lerpPoint(farBL, judge.bottomLeft(), ease));
+            painter.drawLine(lerpPoint(farTR, judge.topRight(), ease),
+                             lerpPoint(farBR, judge.bottomRight(), ease));
         }
-        for (int rail = -4; rail <= 4; ++rail) {
-            const qreal bottomX = w * (0.5 + rail * 0.095);
-            painter.setPen(QPen(rail == 0 ? QColor(89, 204, 230, 52) : QColor(160, 187, 198, 34),
-                                rail == 0 ? 1.3 : 0.8));
-            painter.drawLine(horizon, QPointF(bottomX, h * 0.88));
+        // 纵向栏杆：顶/底面沿判面上下边分布，左右墙沿判面左右边分布
+        for (int rail = 0; rail <= 8; ++rail) {
+            const qreal t = rail / 8.0;
+            const bool center = rail == 4;
+            painter.setPen(QPen(center ? QColor(89, 204, 230, 52) : QColor(160, 187, 198, 34),
+                                center ? 1.3 : 0.8));
+            const QPointF farTop = lerpPoint(farTL, farTR, t);
+            const QPointF farBottom = lerpPoint(farBL, farBR, t);
+            const QPointF farLeft = lerpPoint(farTL, farBL, t);
+            const QPointF farRight = lerpPoint(farTR, farBR, t);
+            painter.drawLine(farTop, judge.topLeft() + QPointF(judge.width() * t, 0));
+            painter.drawLine(farBottom, judge.bottomLeft() + QPointF(judge.width() * t, 0));
+            painter.drawLine(farLeft, judge.topLeft() + QPointF(0, judge.height() * t));
+            painter.drawLine(farRight, judge.topRight() + QPointF(0, judge.height() * t));
         }
+        // 装饰板：地板横条 + 两侧墙竖条
         for (int panel = 0; panel < 3; ++panel) {
             const qreal depth = 0.28 + panel * 0.19;
-            const qreal y = horizon.y() + (h * 0.86 - horizon.y()) * depth * depth;
-            const qreal halfWidth = w * (0.06 + 0.36 * depth);
+            const qreal ease = depth * depth;
             painter.setPen(QPen(QColor(155, 175, 183, 38), 1));
             painter.setBrush(QColor(164, 180, 185, 10));
-            painter.drawRect(QRectF(w * 0.5 - halfWidth, y - h * 0.012,
-                                   halfWidth * 2, h * 0.024));
+            const QPointF floorLeft = lerpPoint(farBL, judge.bottomLeft(), ease);
+            const QPointF floorRight = lerpPoint(farBR, judge.bottomRight(), ease);
+            const qreal panelWidth = (floorRight.x() - floorLeft.x()) * 0.46;
+            const qreal panelY = (floorLeft.y() + floorRight.y()) / 2.0;
+            painter.drawRect(QRectF(w * 0.5 - panelWidth, panelY - h * 0.012,
+                                    panelWidth * 2, h * 0.024));
+            const QPointF wallTopL = lerpPoint(farTL, judge.topLeft(), ease);
+            const QPointF wallBottomL = lerpPoint(farBL, judge.bottomLeft(), ease);
+            const qreal midYL = (wallTopL.y() + wallBottomL.y()) / 2.0;
+            painter.drawRect(QRectF(wallTopL.x() - w * 0.004, midYL - h * 0.05, w * 0.008, h * 0.10));
+            const QPointF wallTopR = lerpPoint(farTR, judge.topRight(), ease);
+            const QPointF wallBottomR = lerpPoint(farBR, judge.bottomRight(), ease);
+            const qreal midYR = (wallTopR.y() + wallBottomR.y()) / 2.0;
+            painter.drawRect(QRectF(wallTopR.x() - w * 0.004, midYR - h * 0.05, w * 0.008, h * 0.10));
         }
-        painter.restore();
 
         auto drawRail = [&painter](const QPointF &from, const QPointF &to, qreal width) {
             painter.setPen(QPen(QColor(48, 222, 255, 38), width * 3.2, Qt::SolidLine, Qt::RoundCap));
@@ -354,14 +406,15 @@ protected:
                                 Qt::SolidLine, Qt::RoundCap));
             painter.drawLine(from, to);
         };
-        drawRail(horizon, QPointF(w * 0.13, h * 0.89), qMax<qreal>(3.0, w * 0.006));
-        drawRail(horizon, QPointF(w * 0.87, h * 0.89), qMax<qreal>(3.0, w * 0.006));
-        painter.setPen(QPen(QColor(217, 248, 252, 185), 1.2));
-        painter.drawLine(QPointF(w * 0.13, h * 0.89), QPointF(w * 0.87, h * 0.89));
+        const qreal railWidth = qMax<qreal>(3.0, w * 0.006);
+        drawRail(farTL, judge.topLeft(), railWidth);
+        drawRail(farTR, judge.topRight(), railWidth);
+        drawRail(farBL, judge.bottomLeft(), railWidth);
+        drawRail(farBR, judge.bottomRight(), railWidth);
         painter.setPen(QPen(QColor(53, 218, 249, 95), 1));
-        painter.drawLine(QPointF(w * 0.15, h * 0.91), QPointF(w * 0.85, h * 0.91));
+        painter.drawLine(QPointF(judge.left() + w * 0.02, judge.bottom() + h * 0.02),
+                         QPointF(judge.right() - w * 0.02, judge.bottom() + h * 0.02));
 
-        const QRectF judge = judgeRect();
         painter.setPen(QPen(QColor(86, 226, 242, 42), 1));
         for (int column = 1; column < ChartGridWidth; ++column) {
             const qreal x = judge.left() + judge.width() * column / qreal(ChartGridWidth);
@@ -386,20 +439,29 @@ protected:
                 const Note &note = m_notes->at(index);
                 const qreal ticksToHit = note.tick - m_playbackTick;
                 const qreal ticksToEnd = (note.isLong() ? note.endTick : note.tick) - m_playbackTick;
-                const qreal approachTicks = qMax(1, m_subdivision) * 4.0;
-                if (m_playbackTick >= 0.0 && (ticksToHit > approachTicks || ticksToEnd < -0.65)) continue;
+                // 与游戏 SkyNoteView.Update 一致：音符钉在自己的判面坐标上，只沿
+                // 灭点射线做深度运动；进度 t = 1 - clamp01(剩余时间 / 出现时长)，
+                // 出现时长按 ~2.4s（120 BPM 约 4.8 拍）随 BPM 缩放，缩放用缓出曲线
                 const QPointF hitPosition = planePoint(note.coordinates().x(), note.coordinates().y());
+                const qreal approachTicks = qMax<qreal>(1.0, 240.0 * 4.8 / m_bpm * m_subdivision);
+                if (m_playbackTick >= 0.0 && (ticksToHit > approachTicks || ticksToEnd < -0.65)) continue;
                 const qreal progress = m_playbackTick < 0.0 ? 0.0
                     : qBound(0.0, ticksToHit / approachTicks, 1.0);
-                const QPointF position = hitPosition * (1.0 - progress) + horizon * progress;
+                const qreal t = 1.0 - progress;
+                const qreal eased = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+                const qreal depthT = eased * 0.65; // 最远停在 35% 深度处（farClipPlane 外不可见）
+                const QPointF position = lerpPoint(hitPosition, horizon, depthT);
                 const QPointF endHitPosition = planePoint(note.endCoordinates().x(), note.endCoordinates().y());
                 const qreal endProgress = m_playbackTick < 0.0 ? 0.0
                     : qBound(0.0, (note.endTick - m_playbackTick) / approachTicks, 1.0);
-                const QPointF endPosition = endHitPosition * (1.0 - endProgress) + horizon * endProgress;
-                const qreal depth = qBound<qreal>(0.0, (position.y() - horizon.y()) / (h * 0.64), 1.0);
+                const qreal endEased = 1.0 - (1.0 - (1.0 - endProgress)) * (1.0 - (1.0 - endProgress)) * (1.0 - (1.0 - endProgress));
+                const QPointF endPosition = lerpPoint(endHitPosition, horizon, endEased * 0.65);
+                const qreal depth = 1.0 - eased;
                 const qreal size = qMax<qreal>(4.0, w * (0.008 + depth * 0.025));
                 const QColor color = note.isFake ? QColor("#f2b65c")
                     : note.type == QStringLiteral("EdgeNote") ? QColor("#49b8ff") : QColor("#5be2f1");
+                // 远处淡入：对应游戏里 spaceCornerAlphaCurve 驱动的出现透明度
+                const int fadeAlpha = qBound(0, qRound(255 * qBound<qreal>(0.0, eased * 2.2, 1.0)), 255);
                 const bool approachingHit = m_playbackTick >= 0.0 && ticksToHit <= 0.0;
                 if (note.isLong()) {
                     painter.setPen(QPen(QColor(color.red(), color.green(), color.blue(), index == m_selected ? 220 : 130),
@@ -413,7 +475,7 @@ protected:
                 painter.setPen(QPen(approachingHit || index == m_selected ? QColor("#ffffff") : color,
                                     qMax<qreal>(1.3, size * 0.13), note.isFake ? Qt::DashLine : Qt::SolidLine));
                 painter.setBrush(QColor(color.red(), color.green(), color.blue(),
-                                        m_playbackTick < 0.0 && index != m_selected ? 95 : 210));
+                                        qMin(m_playbackTick < 0.0 && index != m_selected ? 95 : 210, fadeAlpha)));
                 const QRectF noteRect(position.x() - size, position.y() - size * 0.55,
                                       size * 2, size * 1.1);
                 painter.drawRoundedRect(noteRect, size * 0.18, size * 0.18);
