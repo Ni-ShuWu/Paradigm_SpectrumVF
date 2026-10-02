@@ -308,49 +308,94 @@ protected:
         painter.drawLine(QPointF(w * 0.115, h * 0.925), QPointF(w * 0.885, h * 0.925));
 
         const QRectF judge = judgeRect();
-        const qreal fieldTopHalf = w * 0.04;
-        const QPolygonF field{QPointF(horizon.x() - fieldTopHalf, horizon.y()),
-                              QPointF(horizon.x() + fieldTopHalf, horizon.y()),
-                              judge.bottomRight(),
-                              judge.bottomLeft()};
-        QPainterPath fieldPath;
-        fieldPath.addPolygon(field);
-        QLinearGradient track(0, horizon.y(), 0, judge.bottom());
-        track.setColorAt(0.0, QColor("#171c20"));
-        track.setColorAt(0.48, QColor("#090d11"));
-        track.setColorAt(1.0, QColor("#13191e"));
-        painter.fillPath(fieldPath, track);
+        // 隧道尽头的收束开口：四个面（顶/底/左/右）都向它汇聚
+        const qreal farHalfW = w * 0.013;
+        const qreal farHalfH = h * 0.022;
+        const QPointF farTL(horizon.x() - farHalfW, horizon.y() - farHalfH);
+        const QPointF farTR(horizon.x() + farHalfW, horizon.y() - farHalfH);
+        const QPointF farBL(horizon.x() - farHalfW, horizon.y() + farHalfH);
+        const QPointF farBR(horizon.x() + farHalfW, horizon.y() + farHalfH);
 
-        auto fieldHalfWidthAt = [&](qreal depth) {
-            return fieldTopHalf + (judge.width() / 2.0 - fieldTopHalf) * depth;
+        auto lerpPoint = [](const QPointF &a, const QPointF &b, qreal t) {
+            return a + (b - a) * t;
         };
-        auto fieldYAt = [&](qreal depth) {
-            return horizon.y() + (judge.bottom() - horizon.y()) * depth * depth;
+        const QPolygonF floorPoly{farBL, farBR, judge.bottomRight(), judge.bottomLeft()};
+        const QPolygonF ceilingPoly{judge.topLeft(), judge.topRight(), farTR, farTL};
+        const QPolygonF leftWallPoly{judge.topLeft(), farTL, farBL, judge.bottomLeft()};
+        const QPolygonF rightWallPoly{farTR, judge.topRight(), judge.bottomRight(), farBR};
+
+        auto fillSurface = [&painter](const QPolygonF &poly, const QPointF &far, const QPointF &near,
+                                      const QColor &farColor, const QColor &nearColor) {
+            QLinearGradient gradient(far, near);
+            gradient.setColorAt(0.0, farColor);
+            gradient.setColorAt(1.0, nearColor);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(gradient);
+            painter.drawPolygon(poly);
+            painter.setBrush(Qt::NoBrush);
         };
-        painter.save();
-        painter.setClipPath(fieldPath);
+        fillSurface(floorPoly, horizon, (judge.bottomLeft() + judge.bottomRight()) / 2.0,
+                    QColor("#171c20"), QColor("#13191e"));
+        fillSurface(ceilingPoly, horizon, (judge.topLeft() + judge.topRight()) / 2.0,
+                    QColor("#141a1e"), QColor("#0b1013"));
+        fillSurface(leftWallPoly, horizon, (judge.topLeft() + judge.bottomLeft()) / 2.0,
+                    QColor("#12171b"), QColor("#0e1317"));
+        fillSurface(rightWallPoly, horizon, (judge.topRight() + judge.bottomRight()) / 2.0,
+                    QColor("#12171b"), QColor("#0e1317"));
+
+        painter.setPen(QPen(QColor(120, 220, 240, 60), 1));
+        painter.drawRect(QRectF(farTL, farBR));
+
+        // 横向深度线：四个面共用同一深度插值
         painter.setPen(QPen(QColor(206, 222, 227, 24), 1));
         for (int line = 1; line < 10; ++line) {
             const qreal depth = line / 10.0;
-            const qreal halfWidth = fieldHalfWidthAt(depth);
-            painter.drawLine(QPointF(w * 0.5 - halfWidth, fieldYAt(depth)),
-                             QPointF(w * 0.5 + halfWidth, fieldYAt(depth)));
+            const qreal ease = depth * depth;
+            painter.drawLine(lerpPoint(farBL, judge.bottomLeft(), ease),
+                             lerpPoint(farBR, judge.bottomRight(), ease));
+            painter.drawLine(lerpPoint(farTL, judge.topLeft(), ease),
+                             lerpPoint(farTR, judge.topRight(), ease));
+            painter.drawLine(lerpPoint(farTL, judge.topLeft(), ease),
+                             lerpPoint(farBL, judge.bottomLeft(), ease));
+            painter.drawLine(lerpPoint(farTR, judge.topRight(), ease),
+                             lerpPoint(farBR, judge.bottomRight(), ease));
         }
-        for (int rail = -4; rail <= 4; ++rail) {
-            const qreal bottomX = judge.left() + judge.width() * (rail + 4) / 8.0;
-            painter.setPen(QPen(rail == 0 ? QColor(89, 204, 230, 52) : QColor(160, 187, 198, 34),
-                                rail == 0 ? 1.3 : 0.8));
-            painter.drawLine(horizon, QPointF(bottomX, judge.bottom()));
+        // 纵向栏杆：顶/底面沿判面上下边分布，左右墙沿判面左右边分布
+        for (int rail = 0; rail <= 8; ++rail) {
+            const qreal t = rail / 8.0;
+            const bool center = rail == 4;
+            painter.setPen(QPen(center ? QColor(89, 204, 230, 52) : QColor(160, 187, 198, 34),
+                                center ? 1.3 : 0.8));
+            const QPointF farTop = lerpPoint(farTL, farTR, t);
+            const QPointF farBottom = lerpPoint(farBL, farBR, t);
+            const QPointF farLeft = lerpPoint(farTL, farBL, t);
+            const QPointF farRight = lerpPoint(farTR, farBR, t);
+            painter.drawLine(farTop, judge.topLeft() + QPointF(judge.width() * t, 0));
+            painter.drawLine(farBottom, judge.bottomLeft() + QPointF(judge.width() * t, 0));
+            painter.drawLine(farLeft, judge.topLeft() + QPointF(0, judge.height() * t));
+            painter.drawLine(farRight, judge.topRight() + QPointF(0, judge.height() * t));
         }
+        // 装饰板：地板横条 + 两侧墙竖条
         for (int panel = 0; panel < 3; ++panel) {
             const qreal depth = 0.28 + panel * 0.19;
-            const qreal halfWidth = fieldHalfWidthAt(depth) * 0.92;
+            const qreal ease = depth * depth;
             painter.setPen(QPen(QColor(155, 175, 183, 38), 1));
             painter.setBrush(QColor(164, 180, 185, 10));
-            painter.drawRect(QRectF(w * 0.5 - halfWidth, fieldYAt(depth) - h * 0.012,
-                                   halfWidth * 2, h * 0.024));
+            const QPointF floorLeft = lerpPoint(farBL, judge.bottomLeft(), ease);
+            const QPointF floorRight = lerpPoint(farBR, judge.bottomRight(), ease);
+            const qreal panelWidth = (floorRight.x() - floorLeft.x()) * 0.46;
+            const qreal panelY = (floorLeft.y() + floorRight.y()) / 2.0;
+            painter.drawRect(QRectF(w * 0.5 - panelWidth, panelY - h * 0.012,
+                                    panelWidth * 2, h * 0.024));
+            const QPointF wallTopL = lerpPoint(farTL, judge.topLeft(), ease);
+            const QPointF wallBottomL = lerpPoint(farBL, judge.bottomLeft(), ease);
+            const qreal midYL = (wallTopL.y() + wallBottomL.y()) / 2.0;
+            painter.drawRect(QRectF(wallTopL.x() - w * 0.004, midYL - h * 0.05, w * 0.008, h * 0.10));
+            const QPointF wallTopR = lerpPoint(farTR, judge.topRight(), ease);
+            const QPointF wallBottomR = lerpPoint(farBR, judge.bottomRight(), ease);
+            const qreal midYR = (wallTopR.y() + wallBottomR.y()) / 2.0;
+            painter.drawRect(QRectF(wallTopR.x() - w * 0.004, midYR - h * 0.05, w * 0.008, h * 0.10));
         }
-        painter.restore();
 
         auto drawRail = [&painter](const QPointF &from, const QPointF &to, qreal width) {
             painter.setPen(QPen(QColor(48, 222, 255, 38), width * 3.2, Qt::SolidLine, Qt::RoundCap));
@@ -361,10 +406,11 @@ protected:
                                 Qt::SolidLine, Qt::RoundCap));
             painter.drawLine(from, to);
         };
-        drawRail(horizon, judge.bottomLeft(), qMax<qreal>(3.0, w * 0.006));
-        drawRail(horizon, judge.bottomRight(), qMax<qreal>(3.0, w * 0.006));
-        painter.setPen(QPen(QColor(217, 248, 252, 185), 1.2));
-        painter.drawLine(judge.bottomLeft(), judge.bottomRight());
+        const qreal railWidth = qMax<qreal>(3.0, w * 0.006);
+        drawRail(farTL, judge.topLeft(), railWidth);
+        drawRail(farTR, judge.topRight(), railWidth);
+        drawRail(farBL, judge.bottomLeft(), railWidth);
+        drawRail(farBR, judge.bottomRight(), railWidth);
         painter.setPen(QPen(QColor(53, 218, 249, 95), 1));
         painter.drawLine(QPointF(judge.left() + w * 0.02, judge.bottom() + h * 0.02),
                          QPointF(judge.right() - w * 0.02, judge.bottom() + h * 0.02));
@@ -403,7 +449,8 @@ protected:
                 const qreal endProgress = m_playbackTick < 0.0 ? 0.0
                     : qBound(0.0, (note.endTick - m_playbackTick) / approachTicks, 1.0);
                 const QPointF endPosition = endHitPosition * (1.0 - endProgress) + horizon * endProgress;
-                const qreal depth = qBound<qreal>(0.0, (position.y() - horizon.y()) / (h * 0.64), 1.0);
+                const qreal depth = qBound<qreal>(0.0,
+                    (position.y() - horizon.y()) / (judge.bottom() - horizon.y()), 1.0);
                 const qreal size = qMax<qreal>(4.0, w * (0.008 + depth * 0.025));
                 const QColor color = note.isFake ? QColor("#f2b65c")
                     : note.type == QStringLiteral("EdgeNote") ? QColor("#49b8ff") : QColor("#5be2f1");
