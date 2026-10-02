@@ -439,23 +439,29 @@ protected:
                 const Note &note = m_notes->at(index);
                 const qreal ticksToHit = note.tick - m_playbackTick;
                 const qreal ticksToEnd = (note.isLong() ? note.endTick : note.tick) - m_playbackTick;
-                const qreal approachTicks = qMax(1, m_subdivision) * 4.0;
-                if (m_playbackTick >= 0.0 && (ticksToHit > approachTicks || ticksToEnd < -0.65)) continue;
-                // 与游戏一致：音符保持自身坐标，沿灭点射线从隧道深处向判定面平移
-                // （参考 SkyNoteView.Update：从 farClipPlane 沿相机前向飞向目标点）
+                // 与游戏 SkyNoteView.Update 一致：音符钉在自己的判面坐标上，只沿
+                // 灭点射线做深度运动；进度 t = 1 - clamp01(剩余时间 / 出现时长)，
+                // 出现时长按 ~2.4s（120 BPM 约 4.8 拍）随 BPM 缩放，缩放用缓出曲线
                 const QPointF hitPosition = planePoint(note.coordinates().x(), note.coordinates().y());
+                const qreal approachTicks = qMax<qreal>(1.0, 240.0 * 4.8 / m_bpm * m_subdivision);
+                if (m_playbackTick >= 0.0 && (ticksToHit > approachTicks || ticksToEnd < -0.65)) continue;
                 const qreal progress = m_playbackTick < 0.0 ? 0.0
                     : qBound(0.0, ticksToHit / approachTicks, 1.0);
-                const qreal spawnT = 0.35;
-                const QPointF position = lerpPoint(hitPosition, horizon, progress * (1.0 - spawnT));
+                const qreal t = 1.0 - progress;
+                const qreal eased = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+                const qreal depthT = eased * 0.65; // 最远停在 35% 深度处（farClipPlane 外不可见）
+                const QPointF position = lerpPoint(hitPosition, horizon, depthT);
                 const QPointF endHitPosition = planePoint(note.endCoordinates().x(), note.endCoordinates().y());
                 const qreal endProgress = m_playbackTick < 0.0 ? 0.0
                     : qBound(0.0, (note.endTick - m_playbackTick) / approachTicks, 1.0);
-                const QPointF endPosition = lerpPoint(endHitPosition, horizon, endProgress * (1.0 - spawnT));
-                const qreal depth = 1.0 - progress;
+                const qreal endEased = 1.0 - (1.0 - (1.0 - endProgress)) * (1.0 - (1.0 - endProgress)) * (1.0 - (1.0 - endProgress));
+                const QPointF endPosition = lerpPoint(endHitPosition, horizon, endEased * 0.65);
+                const qreal depth = 1.0 - eased;
                 const qreal size = qMax<qreal>(4.0, w * (0.008 + depth * 0.025));
                 const QColor color = note.isFake ? QColor("#f2b65c")
                     : note.type == QStringLiteral("EdgeNote") ? QColor("#49b8ff") : QColor("#5be2f1");
+                // 远处淡入：对应游戏里 spaceCornerAlphaCurve 驱动的出现透明度
+                const int fadeAlpha = qBound(0, qRound(255 * qBound<qreal>(0.0, eased * 2.2, 1.0)), 255);
                 const bool approachingHit = m_playbackTick >= 0.0 && ticksToHit <= 0.0;
                 if (note.isLong()) {
                     painter.setPen(QPen(QColor(color.red(), color.green(), color.blue(), index == m_selected ? 220 : 130),
@@ -469,7 +475,7 @@ protected:
                 painter.setPen(QPen(approachingHit || index == m_selected ? QColor("#ffffff") : color,
                                     qMax<qreal>(1.3, size * 0.13), note.isFake ? Qt::DashLine : Qt::SolidLine));
                 painter.setBrush(QColor(color.red(), color.green(), color.blue(),
-                                        m_playbackTick < 0.0 && index != m_selected ? 95 : 210));
+                                        qMin(m_playbackTick < 0.0 && index != m_selected ? 95 : 210, fadeAlpha)));
                 const QRectF noteRect(position.x() - size, position.y() - size * 0.55,
                                       size * 2, size * 1.1);
                 painter.drawRoundedRect(noteRect, size * 0.18, size * 0.18);
