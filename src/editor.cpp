@@ -308,6 +308,9 @@ protected:
         painter.drawLine(QPointF(w * 0.115, h * 0.925), QPointF(w * 0.885, h * 0.925));
 
         const QRectF judge = judgeRect();
+        auto lerpPoint = [](const QPointF &a, const QPointF &b, qreal t) {
+            return a + (b - a) * t;
+        };
         // 隧道尽头的收束开口：四个面（顶/底/左/右）都向它汇聚
         const qreal farHalfW = w * 0.013;
         const qreal farHalfH = h * 0.022;
@@ -316,9 +319,6 @@ protected:
         const QPointF farBL(horizon.x() - farHalfW, horizon.y() + farHalfH);
         const QPointF farBR(horizon.x() + farHalfW, horizon.y() + farHalfH);
 
-        auto lerpPoint = [](const QPointF &a, const QPointF &b, qreal t) {
-            return a + (b - a) * t;
-        };
         const QPolygonF floorPoly{farBL, farBR, judge.bottomRight(), judge.bottomLeft()};
         const QPolygonF ceilingPoly{judge.topLeft(), judge.topRight(), farTR, farTL};
         const QPolygonF leftWallPoly{judge.topLeft(), farTL, farBL, judge.bottomLeft()};
@@ -441,16 +441,18 @@ protected:
                 const qreal ticksToEnd = (note.isLong() ? note.endTick : note.tick) - m_playbackTick;
                 const qreal approachTicks = qMax(1, m_subdivision) * 4.0;
                 if (m_playbackTick >= 0.0 && (ticksToHit > approachTicks || ticksToEnd < -0.65)) continue;
+                // 与游戏一致：音符保持自身坐标，沿灭点射线从隧道深处向判定面平移
+                // （参考 SkyNoteView.Update：从 farClipPlane 沿相机前向飞向目标点）
                 const QPointF hitPosition = planePoint(note.coordinates().x(), note.coordinates().y());
                 const qreal progress = m_playbackTick < 0.0 ? 0.0
                     : qBound(0.0, ticksToHit / approachTicks, 1.0);
-                const QPointF position = hitPosition * (1.0 - progress) + horizon * progress;
+                const qreal spawnT = 0.35;
+                const QPointF position = lerpPoint(hitPosition, horizon, progress * (1.0 - spawnT));
                 const QPointF endHitPosition = planePoint(note.endCoordinates().x(), note.endCoordinates().y());
                 const qreal endProgress = m_playbackTick < 0.0 ? 0.0
                     : qBound(0.0, (note.endTick - m_playbackTick) / approachTicks, 1.0);
-                const QPointF endPosition = endHitPosition * (1.0 - endProgress) + horizon * endProgress;
-                const qreal depth = qBound<qreal>(0.0,
-                    (position.y() - horizon.y()) / (judge.bottom() - horizon.y()), 1.0);
+                const QPointF endPosition = lerpPoint(endHitPosition, horizon, endProgress * (1.0 - spawnT));
+                const qreal depth = 1.0 - progress;
                 const qreal size = qMax<qreal>(4.0, w * (0.008 + depth * 0.025));
                 const QColor color = note.isFake ? QColor("#f2b65c")
                     : note.type == QStringLiteral("EdgeNote") ? QColor("#49b8ff") : QColor("#5be2f1");
