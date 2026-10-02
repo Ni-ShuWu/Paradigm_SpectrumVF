@@ -9,8 +9,6 @@
 #include <limits>
 
 namespace {
-constexpr int GridWidth = 12;
-constexpr int GridHeight = 9;
 
 bool readInteger(const QJsonObject &object, const QString &key, int fallback, int minimum, int maximum, int *value)
 {
@@ -70,8 +68,8 @@ QPointF Note::coordinates() const
 {
     if (type == QStringLiteral("EdgeNote")) {
         if (edge == 0) return {0.0, pos};
-        if (edge == 1) return {GridWidth, pos};
-        if (edge == 2) return {pos, GridHeight};
+        if (edge == 1) return {ChartGridWidth, pos};
+        if (edge == 2) return {pos, ChartGridHeight};
         return {pos, 0.0};
     }
     return {x, y};
@@ -81,8 +79,8 @@ QPointF Note::endCoordinates() const
 {
     if (type == QStringLiteral("EdgeNote")) {
         if (edge == 0) return {0.0, endPos};
-        if (edge == 1) return {GridWidth, endPos};
-        if (edge == 2) return {endPos, GridHeight};
+        if (edge == 1) return {ChartGridWidth, endPos};
+        if (edge == 2) return {endPos, ChartGridHeight};
         return {endPos, 0.0};
     }
     return {endX, endY};
@@ -158,7 +156,8 @@ std::optional<Chart> Chart::fromJson(const QByteArray &data, QString *error)
         const QJsonValue tick = item.value(QStringLiteral("tick"));
         const QJsonValue fake = item.value(QStringLiteral("isFake"));
         if ((note.type != QStringLiteral("EdgeNote") && note.type != QStringLiteral("SpaceNote"))
-            || note.kind.isEmpty() || (!tick.isUndefined() && (!tick.isDouble() || std::floor(tick.toDouble()) != tick.toDouble()))
+            || note.kind.isEmpty() || (!tick.isUndefined() && (!tick.isDouble() || std::floor(tick.toDouble()) != tick.toDouble()
+                || tick.toDouble() < 0.0 || tick.toDouble() > std::numeric_limits<int>::max()))
             || (!fake.isUndefined() && !fake.isBool())) {
             if (error) *error = prefix + QStringLiteral(" 的类型、kind、tick 或 isFake 无效。");
             return std::nullopt;
@@ -175,7 +174,7 @@ std::optional<Chart> Chart::fromJson(const QByteArray &data, QString *error)
                 return std::nullopt;
             }
             note.edge = edge.toInt();
-            const double limit = note.edge < 2 ? GridHeight : GridWidth;
+            const double limit = note.edge < 2 ? ChartGridHeight : ChartGridWidth;
             if (!readNumber(item, QStringLiteral("pos"), limit, &coordinate)) {
                 if (error) *error = prefix + QStringLiteral(" 的 pos 超出范围。");
                 return std::nullopt;
@@ -187,8 +186,8 @@ std::optional<Chart> Chart::fromJson(const QByteArray &data, QString *error)
                 if (error) *error = prefix + QStringLiteral(" 的 endPos 超出范围。");
                 return std::nullopt;
             }
-        } else if (!readNumber(item, QStringLiteral("x"), GridWidth, &note.x)
-                   || !readNumber(item, QStringLiteral("y"), GridHeight, &note.y)) {
+        } else if (!readNumber(item, QStringLiteral("x"), ChartGridWidth, &note.x)
+                   || !readNumber(item, QStringLiteral("y"), ChartGridHeight, &note.y)) {
             if (error) *error = prefix + QStringLiteral(" 的坐标超出判面范围。");
             return std::nullopt;
         } else {
@@ -196,9 +195,9 @@ std::optional<Chart> Chart::fromJson(const QByteArray &data, QString *error)
             note.endY = note.y;
             if (note.isLong()
                 && ((!item.value(QStringLiteral("endX")).isUndefined()
-                     && !readNumber(item, QStringLiteral("endX"), GridWidth, &note.endX))
+                     && !readNumber(item, QStringLiteral("endX"), ChartGridWidth, &note.endX))
                     || (!item.value(QStringLiteral("endY")).isUndefined()
-                        && !readNumber(item, QStringLiteral("endY"), GridHeight, &note.endY)))) {
+                        && !readNumber(item, QStringLiteral("endY"), ChartGridHeight, &note.endY)))) {
                 if (error) *error = prefix + QStringLiteral(" 的结束坐标超出判面范围。");
                 return std::nullopt;
             }

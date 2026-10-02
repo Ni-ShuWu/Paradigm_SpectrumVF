@@ -66,6 +66,9 @@ int main(int argc, char *argv[])
     const QByteArray invalid = R"({"format":"ParadigmOriginChart","version":1,"title":"bad","notes":[{"type":"SpaceNote","kind":"tap","tick":0,"isFake":false,"x":13,"y":4}]})";
     assert(!Chart::fromJson(invalid, &error));
     assert(!error.isEmpty());
+    const QByteArray negativeTick = R"({"format":"ParadigmOriginChart","version":1,"title":"bad","notes":[{"type":"SpaceNote","kind":"tap","tick":-1,"isFake":false,"x":2,"y":3}]})";
+    assert(!Chart::fromJson(negativeTick, &error));
+    assert(!error.isEmpty());
     const QByteArray invalidEndTick = R"({"format":"ParadigmOriginChart","version":1,"title":"bad","notes":[{"type":"SpaceNote","kind":"slider","tick":8,"endTick":7,"x":2,"y":3,"endX":4,"endY":5}]})";
     assert(!Chart::fromJson(invalidEndTick, &error));
     assert(!error.isEmpty());
